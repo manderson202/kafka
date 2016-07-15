@@ -18,20 +18,18 @@
 package kafka.admin
 
 import java.util.concurrent.LinkedBlockingQueue
-import java.util.concurrent.ThreadPoolExecutor
-import java.util.concurrent.TimeUnit
+
 import joptsimple.OptionParser
 import org.I0Itec.zkclient.exception.ZkException
-import kafka.utils.{Logging, ZkUtils, CommandLineUtils}
-import org.apache.log4j.Level
+import kafka.utils.{CommandLineUtils, Logging, ZkUtils}
 import org.apache.kafka.common.security.JaasUtils
 import org.apache.zookeeper.AsyncCallback.{ChildrenCallback, StatCallback}
 import org.apache.zookeeper.data.Stat
 import org.apache.zookeeper.KeeperException
 import org.apache.zookeeper.KeeperException.Code
+
 import scala.annotation.tailrec
 import scala.collection.JavaConverters._
-import scala.collection._
 import scala.collection.mutable.Queue
 import scala.concurrent._
 import scala.concurrent.duration._
@@ -83,9 +81,9 @@ object ZkSecurityMigrator extends Logging {
     if (options.has(helpOpt))
       CommandLineUtils.printUsageAndDie(parser, usageMessage)
 
-    if ((jaasFile == null)) {
-     val errorMsg = ("No JAAS configuration file has been specified. Please make sure that you have set " +
-                    "the system property %s".format(JaasUtils.JAVA_LOGIN_CONFIG_PARAM))
+    if (jaasFile == null) {
+     val errorMsg = "No JAAS configuration file has been specified. Please make sure that you have set " +
+       "the system property %s".format(JaasUtils.JAVA_LOGIN_CONFIG_PARAM)
      System.out.println("ERROR: %s".format(errorMsg))
      throw new IllegalArgumentException("Incorrect configuration")
     }
@@ -128,16 +126,33 @@ class ZkSecurityMigrator(zkUtils: ZkUtils) extends Logging {
   private val workQueue = new LinkedBlockingQueue[Runnable]
   private val futures = new Queue[Future[String]]
 
-  private def setAclsRecursively(path: String) = {
+  private def setAcl(path: String, setPromise: Promise[String]) = {
     info("Setting ACL for path %s".format(path))
+    zkUtils.zkConnection.getZookeeper.setACL(path, ZkUtils.DefaultAcls(zkUtils.isSecure), -1, SetACLCallback, setPromise)
+  }
+
+  private def getChildren(path: String, childrenPromise: Promise[String]) = {
+    info("Getting children to set ACLs for path %s".format(path))
+    zkUtils.zkConnection.getZookeeper.getChildren(path, false, GetChildrenCallback, childrenPromise)
+  }
+
+  private def setAclIndividually(path: String) = {
+    val setPromise = Promise[String]
+    futures.synchronized {
+      futures += setPromise.future
+    }
+    setAcl(path, setPromise)
+  }
+
+  private def setAclsRecursively(path: String) = {
     val setPromise = Promise[String]
     val childrenPromise = Promise[String]
     futures.synchronized {
       futures += setPromise.future
       futures += childrenPromise.future
     }
-    zkUtils.zkConnection.getZookeeper.setACL(path, ZkUtils.DefaultAcls(zkUtils.isSecure), -1, SetACLCallback, setPromise)
-    zkUtils.zkConnection.getZookeeper.getChildren(path, false, GetChildrenCallback, childrenPromise)
+    setAcl(path, setPromise)
+    getChildren(path, childrenPromise)
   }
 
   private object GetChildrenCallback extends ChildrenCallback {
@@ -205,11 +220,12 @@ class ZkSecurityMigrator(zkUtils: ZkUtils) extends Logging {
 
   private def run(): Unit = {
     try {
+      setAclIndividually("/")
       for (path <- zkUtils.securePersistentZkPaths) {
         debug("Going to set ACL for %s".format(path))
         zkUtils.makeSurePersistentPathExists(path)
+        setAclsRecursively(path)
       }
-      setAclsRecursively("/")
       
       @tailrec
       def recurse(): Unit = {

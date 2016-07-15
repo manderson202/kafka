@@ -69,6 +69,13 @@
       <allow pkg="org.apache.kafka.common.annotation" />
       <allow pkg="org.apache.kafka.common.network" />
       <allow pkg="org.apache.kafka.common.config" />
+      <subpackage name="authenticator">
+        <allow pkg="org.apache.kafka.common.protocol" />
+        <allow pkg="org.apache.kafka.common.protocol.types" />
+        <allow pkg="org.apache.kafka.common.requests" />
+        <allow pkg="org.apache.kafka.common.errors" />
+        <allow pkg="org.apache.kafka.clients" />
+      </subpackage>
     </subpackage>
 
     <subpackage name="protocol">
@@ -84,6 +91,7 @@
     <subpackage name="requests">
       <allow pkg="org.apache.kafka.common.protocol" />
       <allow pkg="org.apache.kafka.common.network" />
+      <allow pkg="org.apache.kafka.common.record" />
       <!-- for testing -->
       <allow pkg="org.apache.kafka.common.errors" />
     </subpackage>
@@ -115,6 +123,45 @@
     <allow pkg="com.fasterxml.jackson" />
     <allow pkg="net.sourceforge.argparse4j" />
     <allow pkg="org.apache.log4j" />
+  </subpackage>
+
+  <subpackage name="streams">
+    <allow pkg="org.apache.kafka.common"/>
+    <allow pkg="org.apache.kafka.test"/>
+    <allow pkg="org.apache.kafka.clients"/>
+    <allow pkg="org.apache.kafka.clients.producer" exact-match="true"/>
+    <allow pkg="org.apache.kafka.clients.consumer" exact-match="true"/>
+
+    <allow pkg="org.apache.kafka.streams"/>
+
+    <subpackage name="examples">
+      <allow pkg="com.fasterxml.jackson.databind" />
+      <allow pkg="org.apache.kafka.connect.json" />
+    </subpackage>
+    
+    <subpackage name="integration">
+      <allow pkg="kafka.admin" />
+      <allow pkg="kafka.server" />
+      <allow pkg="kafka.utils" />
+      <allow pkg="kafka.zk" />
+      <allow pkg="kafka.log" />
+      <allow pkg="scala" />
+      <allow pkg="scala.collection" />
+      <allow pkg="org.I0Itec.zkclient" />
+      <allow pkg="org.hamcrest" />
+    </subpackage>
+
+    <subpackage name="state">
+      <allow pkg="org.rocksdb" />
+    </subpackage>
+
+    <subpackage name="processor">
+      <subpackage name="internals">
+        <allow pkg="org.I0Itec.zkclient" />
+        <allow pkg="com.fasterxml.jackson" />
+        <allow pkg="org.apache.zookeeper" />
+      </subpackage>
+    </subpackage>
   </subpackage>
 
   <subpackage name="log4jappender">
@@ -149,6 +196,8 @@
 
     <subpackage name="runtime">
       <allow pkg="org.apache.kafka.connect" />
+      <allow pkg="org.reflections"/>
+      <allow pkg="org.reflections.util"/>
 
       <subpackage name="rest">
         <allow pkg="org.eclipse.jetty" />
@@ -173,6 +222,7 @@
 
     <subpackage name="util">
       <allow pkg="org.apache.kafka.connect" />
+      <allow pkg="org.reflections.vfs" />
       <!-- for annotations to avoid code duplication -->
       <allow pkg="com.fasterxml.jackson.annotation" />
     </subpackage>
@@ -192,6 +242,11 @@
       <allow pkg="org.powermock" />
     </subpackage>
 
+    <subpackage name="tools">
+      <allow pkg="org.apache.kafka.connect" />
+      <allow pkg="org.apache.kafka.tools" />
+      <allow pkg="com.fasterxml.jackson" />
+    </subpackage>
   </subpackage>
 
 </import-control>

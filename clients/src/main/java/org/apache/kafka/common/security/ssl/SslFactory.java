@@ -22,16 +22,24 @@ import org.apache.kafka.common.config.SslConfigs;
 import org.apache.kafka.common.network.Mode;
 import org.apache.kafka.common.config.types.Password;
 
-import javax.net.ssl.*;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.security.GeneralSecurityException;
 import java.security.KeyStore;
-
 import java.util.List;
 import java.util.Map;
 
+import javax.net.ssl.KeyManager;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLParameters;
+import javax.net.ssl.TrustManagerFactory;
+
 public class SslFactory implements Configurable {
+
+    private final Mode mode;
+    private final String clientAuthConfigOverride;
 
     private String protocol;
     private String provider;
@@ -46,10 +54,14 @@ public class SslFactory implements Configurable {
     private SSLContext sslContext;
     private boolean needClientAuth;
     private boolean wantClientAuth;
-    private final Mode mode;
 
     public SslFactory(Mode mode) {
+        this(mode, null);
+    }
+
+    public SslFactory(Mode mode, String clientAuthConfigOverride) {
         this.mode = mode;
+        this.clientAuthConfigOverride = clientAuthConfigOverride;
     }
 
     @Override
@@ -57,11 +69,12 @@ public class SslFactory implements Configurable {
         this.protocol =  (String) configs.get(SslConfigs.SSL_PROTOCOL_CONFIG);
         this.provider = (String) configs.get(SslConfigs.SSL_PROVIDER_CONFIG);
 
-
+        @SuppressWarnings("unchecked")
         List<String> cipherSuitesList = (List<String>) configs.get(SslConfigs.SSL_CIPHER_SUITES_CONFIG);
         if (cipherSuitesList != null)
             this.cipherSuites = cipherSuitesList.toArray(new String[cipherSuitesList.size()]);
 
+        @SuppressWarnings("unchecked")
         List<String> enabledProtocolsList = (List<String>) configs.get(SslConfigs.SSL_ENABLED_PROTOCOLS_CONFIG);
         if (enabledProtocolsList != null)
             this.enabledProtocols = enabledProtocolsList.toArray(new String[enabledProtocolsList.size()]);
@@ -70,7 +83,9 @@ public class SslFactory implements Configurable {
         if (endpointIdentification != null)
             this.endpointIdentification = endpointIdentification;
 
-        String clientAuthConfig = (String) configs.get(SslConfigs.SSL_CLIENT_AUTH_CONFIG);
+        String clientAuthConfig = clientAuthConfigOverride;
+        if (clientAuthConfig == null)
+            clientAuthConfig = (String) configs.get(SslConfigs.SSL_CLIENT_AUTH_CONFIG);
         if (clientAuthConfig != null) {
             if (clientAuthConfig.equals("required"))
                 this.needClientAuth = true;

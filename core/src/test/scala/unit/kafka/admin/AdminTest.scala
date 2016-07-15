@@ -16,36 +16,39 @@
  */
 package kafka.admin
 
-import junit.framework.Assert._
-import kafka.api.RequestKeys
+import org.apache.kafka.common.errors.{InvalidReplicaAssignmentException, InvalidReplicationFactorException, InvalidTopicException, TopicExistsException}
 import org.apache.kafka.common.metrics.Quota
+import org.apache.kafka.common.protocol.ApiKeys
+import org.junit.Assert._
 import org.junit.Test
 import java.util.Properties
+
 import kafka.utils._
 import kafka.log._
 import kafka.zk.ZooKeeperTestHarness
-import kafka.utils.{Logging, ZkUtils, TestUtils}
-import kafka.common.{InvalidTopicException, TopicExistsException, TopicAndPartition}
-import kafka.server.{ConfigType, KafkaServer, KafkaConfig}
+import kafka.utils.{Logging, TestUtils, ZkUtils}
+import kafka.common.TopicAndPartition
+import kafka.server.{ConfigType, KafkaConfig, KafkaServer}
 import java.io.File
+
 import TestUtils._
 
 import scala.collection.{Map, immutable}
 
-class AdminTest extends ZooKeeperTestHarness with Logging {
+class AdminTest extends ZooKeeperTestHarness with Logging with RackAwareTest {
 
   @Test
   def testReplicaAssignment() {
-    val brokerList = List(0, 1, 2, 3, 4)
+    val brokerMetadatas = (0 to 4).map(new BrokerMetadata(_, None))
 
     // test 0 replication factor
-    intercept[AdminOperationException] {
-      AdminUtils.assignReplicasToBrokers(brokerList, 10, 0)
+    intercept[InvalidReplicationFactorException] {
+      AdminUtils.assignReplicasToBrokers(brokerMetadatas, 10, 0)
     }
 
     // test wrong replication factor
-    intercept[AdminOperationException] {
-      AdminUtils.assignReplicasToBrokers(brokerList, 10, 6)
+    intercept[InvalidReplicationFactorException] {
+      AdminUtils.assignReplicasToBrokers(brokerMetadatas, 10, 6)
     }
 
     // correct assignment
@@ -61,9 +64,8 @@ class AdminTest extends ZooKeeperTestHarness with Logging {
         8 -> List(3, 0, 1),
         9 -> List(4, 1, 2))
 
-    val actualAssignment = AdminUtils.assignReplicasToBrokers(brokerList, 10, 3, 0)
-    val e = (expectedAssignment.toList == actualAssignment.toList)
-    assertTrue(expectedAssignment.toList == actualAssignment.toList)
+    val actualAssignment = AdminUtils.assignReplicasToBrokers(brokerMetadatas, 10, 3, 0)
+    assertEquals(expectedAssignment, actualAssignment)
   }
 
   @Test
@@ -72,12 +74,12 @@ class AdminTest extends ZooKeeperTestHarness with Logging {
     TestUtils.createBrokersInZk(zkUtils, brokers)
 
     // duplicate brokers
-    intercept[IllegalArgumentException] {
+    intercept[InvalidReplicaAssignmentException] {
       AdminUtils.createOrUpdateTopicPartitionAssignmentPathInZK(zkUtils, "test", Map(0->Seq(0,0)))
     }
 
     // inconsistent replication factor
-    intercept[IllegalArgumentException] {
+    intercept[InvalidReplicaAssignmentException] {
       AdminUtils.createOrUpdateTopicPartitionAssignmentPathInZK(zkUtils, "test", Map(0->Seq(0,1), 1->Seq(0)))
     }
 
@@ -125,7 +127,7 @@ class AdminTest extends ZooKeeperTestHarness with Logging {
     AdminUtils.createOrUpdateTopicPartitionAssignmentPathInZK(zkUtils, topic, expectedReplicaAssignment)
     // create leaders for all partitions
     TestUtils.makeLeaderForPartition(zkUtils, topic, leaderForPartitionMap, 1)
-    val actualReplicaList = leaderForPartitionMap.keys.toArray.map(p => (p -> zkUtils.getReplicasForPartition(topic, p))).toMap
+    val actualReplicaList = leaderForPartitionMap.keys.toArray.map(p => p -> zkUtils.getReplicasForPartition(topic, p)).toMap
     assertEquals(expectedReplicaAssignment.size, actualReplicaList.size)
     for(i <- 0 until actualReplicaList.size)
       assertEquals(expectedReplicaAssignment.get(i).get, actualReplicaList(i))
@@ -172,9 +174,9 @@ class AdminTest extends ZooKeeperTestHarness with Logging {
     assertTrue("Partition reassignment attempt failed for [test, 0]", reassignPartitionsCommand.reassignPartitions())
     // wait until reassignment is completed
     TestUtils.waitUntilTrue(() => {
-        val partitionsBeingReassigned = zkUtils.getPartitionsBeingReassigned().mapValues(_.newReplicas);
+        val partitionsBeingReassigned = zkUtils.getPartitionsBeingReassigned().mapValues(_.newReplicas)
         ReassignPartitionsCommand.checkIfPartitionReassignmentSucceeded(zkUtils, topicAndPartition, newReplicas,
-        Map(topicAndPartition -> newReplicas), partitionsBeingReassigned) == ReassignmentCompleted;
+        Map(topicAndPartition -> newReplicas), partitionsBeingReassigned) == ReassignmentCompleted
       },
       "Partition reassignment should complete")
     val assignedReplicas = zkUtils.getReplicasForPartition(topic, partitionToBeReassigned)
@@ -203,9 +205,9 @@ class AdminTest extends ZooKeeperTestHarness with Logging {
     assertTrue("Partition reassignment failed for test, 0", reassignPartitionsCommand.reassignPartitions())
     // wait until reassignment is completed
     TestUtils.waitUntilTrue(() => {
-        val partitionsBeingReassigned = zkUtils.getPartitionsBeingReassigned().mapValues(_.newReplicas);
+        val partitionsBeingReassigned = zkUtils.getPartitionsBeingReassigned().mapValues(_.newReplicas)
         ReassignPartitionsCommand.checkIfPartitionReassignmentSucceeded(zkUtils, topicAndPartition, newReplicas,
-          Map(topicAndPartition -> newReplicas), partitionsBeingReassigned) == ReassignmentCompleted;
+          Map(topicAndPartition -> newReplicas), partitionsBeingReassigned) == ReassignmentCompleted
       },
       "Partition reassignment should complete")
     val assignedReplicas = zkUtils.getReplicasForPartition(topic, partitionToBeReassigned)
@@ -234,9 +236,9 @@ class AdminTest extends ZooKeeperTestHarness with Logging {
     assertTrue("Partition reassignment failed for test, 0", reassignPartitionsCommand.reassignPartitions())
     // wait until reassignment is completed
     TestUtils.waitUntilTrue(() => {
-        val partitionsBeingReassigned = zkUtils.getPartitionsBeingReassigned().mapValues(_.newReplicas);
+        val partitionsBeingReassigned = zkUtils.getPartitionsBeingReassigned().mapValues(_.newReplicas)
         ReassignPartitionsCommand.checkIfPartitionReassignmentSucceeded(zkUtils, topicAndPartition, newReplicas,
-          Map(topicAndPartition -> newReplicas), partitionsBeingReassigned) == ReassignmentCompleted;
+          Map(topicAndPartition -> newReplicas), partitionsBeingReassigned) == ReassignmentCompleted
       },
       "Partition reassignment should complete")
     val assignedReplicas = zkUtils.getReplicasForPartition(topic, partitionToBeReassigned)
@@ -313,7 +315,8 @@ class AdminTest extends ZooKeeperTestHarness with Logging {
     val partition = 1
     val preferredReplica = 0
     // create brokers
-    val serverConfigs = TestUtils.createBrokerConfigs(3, zkConnect, false).map(KafkaConfig.fromProps)
+    val brokerRack = Map(0 -> "rack0", 1 -> "rack1", 2 -> "rack2")
+    val serverConfigs = TestUtils.createBrokerConfigs(3, zkConnect, false, rackInfo = brokerRack).map(KafkaConfig.fromProps)
     // create the topic
     AdminUtils.createOrUpdateTopicPartitionAssignmentPathInZK(zkUtils, topic, expectedReplicaAssignment)
     val servers = serverConfigs.reverseMap(s => TestUtils.createServer(s))
@@ -417,7 +420,7 @@ class AdminTest extends ZooKeeperTestHarness with Logging {
       assertEquals(newConfig, configInZk)
     } finally {
       server.shutdown()
-      server.config.logDirs.foreach(CoreUtils.rm(_))
+      CoreUtils.delete(server.config.logDirs)
     }
   }
 
@@ -444,11 +447,42 @@ class AdminTest extends ZooKeeperTestHarness with Logging {
     // Test that the existing clientId overrides are read
     val server = TestUtils.createServer(KafkaConfig.fromProps(TestUtils.createBrokerConfig(0, zkConnect)))
     try {
-      assertEquals(new Quota(1000, true), server.apis.quotaManagers(RequestKeys.ProduceKey).quota(clientId));
-      assertEquals(new Quota(2000, true), server.apis.quotaManagers(RequestKeys.FetchKey).quota(clientId));
+      assertEquals(new Quota(1000, true), server.apis.quotaManagers(ApiKeys.PRODUCE.id).quota(clientId))
+      assertEquals(new Quota(2000, true), server.apis.quotaManagers(ApiKeys.FETCH.id).quota(clientId))
     } finally {
       server.shutdown()
-      server.config.logDirs.foreach(CoreUtils.rm(_))
+      CoreUtils.delete(server.config.logDirs)
     }
+  }
+
+  @Test
+  def testGetBrokerMetadatas() {
+    // broker 4 has no rack information
+    val brokerList = 0 to 5
+    val rackInfo = Map(0 -> "rack1", 1 -> "rack2", 2 -> "rack2", 3 -> "rack1", 5 -> "rack3")
+    val brokerMetadatas = toBrokerMetadata(rackInfo, brokersWithoutRack = brokerList.filterNot(rackInfo.keySet))
+    TestUtils.createBrokersInZk(brokerMetadatas, zkUtils)
+
+    val processedMetadatas1 = AdminUtils.getBrokerMetadatas(zkUtils, RackAwareMode.Disabled)
+    assertEquals(brokerList, processedMetadatas1.map(_.id))
+    assertEquals(List.fill(brokerList.size)(None), processedMetadatas1.map(_.rack))
+
+    val processedMetadatas2 = AdminUtils.getBrokerMetadatas(zkUtils, RackAwareMode.Safe)
+    assertEquals(brokerList, processedMetadatas2.map(_.id))
+    assertEquals(List.fill(brokerList.size)(None), processedMetadatas2.map(_.rack))
+
+    intercept[AdminOperationException] {
+      AdminUtils.getBrokerMetadatas(zkUtils, RackAwareMode.Enforced)
+    }
+
+    val partialList = List(0, 1, 2, 3, 5)
+    val processedMetadatas3 = AdminUtils.getBrokerMetadatas(zkUtils, RackAwareMode.Enforced, Some(partialList))
+    assertEquals(partialList, processedMetadatas3.map(_.id))
+    assertEquals(partialList.map(rackInfo), processedMetadatas3.flatMap(_.rack))
+
+    val numPartitions = 3
+    AdminUtils.createTopic(zkUtils, "foo", numPartitions, 2, rackAwareMode = RackAwareMode.Safe)
+    val assignment = zkUtils.getReplicaAssignmentForTopics(Seq("foo"))
+    assertEquals(numPartitions, assignment.size)
   }
 }

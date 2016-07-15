@@ -21,11 +21,12 @@ import java.util.concurrent.locks.ReentrantLock
 
 import kafka.cluster.BrokerEndPoint
 import kafka.consumer.PartitionTopicInfo
-import kafka.message.{InvalidMessageException, MessageAndOffset, ByteBufferMessageSet}
+import kafka.message.{MessageAndOffset, ByteBufferMessageSet}
 import kafka.utils.{Pool, ShutdownableThread, DelayedItem}
 import kafka.common.{KafkaException, ClientIdAndBroker, TopicAndPartition}
 import kafka.metrics.KafkaMetricsGroup
 import kafka.utils.CoreUtils.inLock
+import org.apache.kafka.common.errors.CorruptRecordException
 import org.apache.kafka.common.protocol.Errors
 import AbstractFetcherThread._
 import scala.collection.{mutable, Set, Map}
@@ -76,6 +77,10 @@ abstract class AbstractFetcherThread(name: String,
       partitionMapCond.signalAll()
     }
     awaitShutdown()
+
+    // we don't need the lock since the thread has finished shutdown and metric removal is safe
+    fetcherStats.unregister()
+    fetcherLagStats.unregister()
   }
 
   override def doWork() {
@@ -103,7 +108,7 @@ abstract class AbstractFetcherThread(name: String,
     } catch {
       case t: Throwable =>
         if (isRunning.get) {
-          warn("Error in fetch %s. Possible cause: %s".format(fetchRequest, t.toString))
+          warn(s"Error in fetch $fetchRequest", t)
           inLock(partitionMapLock) {
             partitionsWithError ++= partitionMap.keys
             // there is an error occurred while fetching partitions, sleep a while
@@ -132,12 +137,12 @@ abstract class AbstractFetcherThread(name: String,
                       case None => currentPartitionFetchState.offset
                     }
                     partitionMap.put(topicAndPartition, new PartitionFetchState(newOffset))
-                    fetcherLagStats.getFetcherLagStats(topic, partitionId).lag = Math.max(0L, partitionData.highWatermark - newOffset)
+                    fetcherLagStats.getAndMaybePut(topic, partitionId).lag = Math.max(0L, partitionData.highWatermark - newOffset)
                     fetcherStats.byteRate.mark(validBytes)
                     // Once we hand off the partition data to the subclass, we can't mess with it any more in this thread
                     processPartitionData(topicAndPartition, currentPartitionFetchState.offset, partitionData)
                   } catch {
-                    case ime: InvalidMessageException =>
+                    case ime: CorruptRecordException =>
                       // we log the error and continue. This ensures two things
                       // 1. If there is a corrupt message in a topic partition, it does not bring the fetcher thread down and cause other topic partition to also lag
                       // 2. If the message is corrupt due to a transient state in the log (truncation, partial writes can cause this), we simply continue and
@@ -206,8 +211,12 @@ abstract class AbstractFetcherThread(name: String,
 
   def removePartitions(topicAndPartitions: Set[TopicAndPartition]) {
     partitionMapLock.lockInterruptibly()
-    try topicAndPartitions.foreach(partitionMap.remove)
-    finally partitionMapLock.unlock()
+    try {
+      topicAndPartitions.foreach { topicAndPartition =>
+        partitionMap.remove(topicAndPartition)
+        fetcherLagStats.unregister(topicAndPartition.topic, topicAndPartition.partition)
+      }
+    } finally partitionMapLock.unlock()
   }
 
   def partitionCount() = {
@@ -234,15 +243,25 @@ object AbstractFetcherThread {
 
 }
 
+object FetcherMetrics {
+  val ConsumerLag = "ConsumerLag"
+  val RequestsPerSec = "RequestsPerSec"
+  val BytesPerSec = "BytesPerSec"
+}
+
 class FetcherLagMetrics(metricId: ClientIdTopicPartition) extends KafkaMetricsGroup {
+
   private[this] val lagVal = new AtomicLong(-1L)
-  newGauge("ConsumerLag",
+  private[this] val tags = Map(
+    "clientId" -> metricId.clientId,
+    "topic" -> metricId.topic,
+    "partition" -> metricId.partitionId.toString)
+
+  newGauge(FetcherMetrics.ConsumerLag,
     new Gauge[Long] {
       def value = lagVal.get
     },
-    Map("clientId" -> metricId.clientId,
-      "topic" -> metricId.topic,
-      "partition" -> metricId.partitionId.toString)
+    tags
   )
 
   def lag_=(newLag: Long) {
@@ -250,14 +269,29 @@ class FetcherLagMetrics(metricId: ClientIdTopicPartition) extends KafkaMetricsGr
   }
 
   def lag = lagVal.get
+
+  def unregister() {
+    removeMetric(FetcherMetrics.ConsumerLag, tags)
+  }
 }
 
 class FetcherLagStats(metricId: ClientIdAndBroker) {
   private val valueFactory = (k: ClientIdTopicPartition) => new FetcherLagMetrics(k)
   val stats = new Pool[ClientIdTopicPartition, FetcherLagMetrics](Some(valueFactory))
 
-  def getFetcherLagStats(topic: String, partitionId: Int): FetcherLagMetrics = {
+  def getAndMaybePut(topic: String, partitionId: Int): FetcherLagMetrics = {
     stats.getAndMaybePut(new ClientIdTopicPartition(metricId.clientId, topic, partitionId))
+  }
+
+  def unregister(topic: String, partitionId: Int) {
+    val lagMetrics = stats.remove(new ClientIdTopicPartition(metricId.clientId, topic, partitionId))
+    if (lagMetrics != null) lagMetrics.unregister()
+  }
+
+  def unregister() {
+    stats.keys.toBuffer.foreach { key: ClientIdTopicPartition =>
+      unregister(key.topic, key.partitionId)
+    }
   }
 }
 
@@ -266,9 +300,15 @@ class FetcherStats(metricId: ClientIdAndBroker) extends KafkaMetricsGroup {
     "brokerHost" -> metricId.brokerHost,
     "brokerPort" -> metricId.brokerPort.toString)
 
-  val requestRate = newMeter("RequestsPerSec", "requests", TimeUnit.SECONDS, tags)
+  val requestRate = newMeter(FetcherMetrics.RequestsPerSec, "requests", TimeUnit.SECONDS, tags)
 
-  val byteRate = newMeter("BytesPerSec", "bytes", TimeUnit.SECONDS, tags)
+  val byteRate = newMeter(FetcherMetrics.BytesPerSec, "bytes", TimeUnit.SECONDS, tags)
+
+  def unregister() {
+    removeMetric(FetcherMetrics.RequestsPerSec, tags)
+    removeMetric(FetcherMetrics.BytesPerSec, tags)
+  }
+
 }
 
 case class ClientIdTopicPartition(clientId: String, topic: String, partitionId: Int) {

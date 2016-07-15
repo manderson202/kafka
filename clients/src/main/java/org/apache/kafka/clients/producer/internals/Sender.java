@@ -41,6 +41,7 @@ import org.apache.kafka.common.metrics.stats.Max;
 import org.apache.kafka.common.metrics.stats.Rate;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.record.Record;
 import org.apache.kafka.common.requests.ProduceRequest;
 import org.apache.kafka.common.requests.ProduceResponse;
 import org.apache.kafka.common.requests.RequestSend;
@@ -65,6 +66,9 @@ public class Sender implements Runnable {
 
     /* the metadata for the client */
     private final Metadata metadata;
+
+    /* the flag indicating whether the producer should guarantee the message order on the broker or not. */
+    private final boolean guaranteeMessageOrder;
 
     /* the maximum request size to attempt to send to the server */
     private final int maxRequestSize;
@@ -96,6 +100,7 @@ public class Sender implements Runnable {
     public Sender(KafkaClient client,
                   Metadata metadata,
                   RecordAccumulator accumulator,
+                  boolean guaranteeMessageOrder,
                   int maxRequestSize,
                   short acks,
                   int retries,
@@ -106,6 +111,7 @@ public class Sender implements Runnable {
         this.client = client;
         this.accumulator = accumulator;
         this.metadata = metadata;
+        this.guaranteeMessageOrder = guaranteeMessageOrder;
         this.maxRequestSize = maxRequestSize;
         this.running = true;
         this.acks = acks;
@@ -163,14 +169,20 @@ public class Sender implements Runnable {
      * @param now
      *            The current POSIX time in milliseconds
      */
-    public void run(long now) {
+    void run(long now) {
         Cluster cluster = metadata.fetch();
         // get the list of partitions with data ready to send
         RecordAccumulator.ReadyCheckResult result = this.accumulator.ready(cluster, now);
 
         // if there are any partitions whose leaders are not known yet, force metadata update
-        if (result.unknownLeadersExist)
+        if (!result.unknownLeaderTopics.isEmpty()) {
+            // The set of topics with unknown leader contains topics with leader election pending as well as
+            // topics which may have expired. Add the topic again to metadata to ensure it is included
+            // and request metadata update, since there are messages to send to the topic.
+            for (String topic : result.unknownLeaderTopics)
+                this.metadata.add(topic);
             this.metadata.requestUpdate();
+        }
 
         // remove any nodes we aren't ready to send to
         Iterator<Node> iter = result.readyNodes.iterator();
@@ -188,8 +200,15 @@ public class Sender implements Runnable {
                                                                          result.readyNodes,
                                                                          this.maxRequestSize,
                                                                          now);
+        if (guaranteeMessageOrder) {
+            // Mute all the partitions drained
+            for (List<RecordBatch> batchList : batches.values()) {
+                for (RecordBatch batch : batchList)
+                    this.accumulator.mutePartition(batch.topicPartition);
+            }
+        }
 
-        List<RecordBatch> expiredBatches = this.accumulator.abortExpiredBatches(this.requestTimeout, cluster, now);
+        List<RecordBatch> expiredBatches = this.accumulator.abortExpiredBatches(this.requestTimeout, now);
         // update sensors
         for (RecordBatch expiredBatch : expiredBatches)
             this.sensors.recordErrors(expiredBatch.topicPartition.topic(), expiredBatch.recordCount);
@@ -243,7 +262,7 @@ public class Sender implements Runnable {
                                                                                                   .request()
                                                                                                   .destination());
             for (RecordBatch batch : batches.values())
-                completeBatch(batch, Errors.NETWORK_EXCEPTION, -1L, correlationId, now);
+                completeBatch(batch, Errors.NETWORK_EXCEPTION, -1L, Record.NO_TIMESTAMP, correlationId, now);
         } else {
             log.trace("Received produce response from node {} with correlation id {}",
                       response.request().request().destination(),
@@ -251,13 +270,12 @@ public class Sender implements Runnable {
             // if we have a response, parse it
             if (response.hasResponse()) {
                 ProduceResponse produceResponse = new ProduceResponse(response.responseBody());
-                for (Map.Entry<TopicPartition, ProduceResponse.PartitionResponse> entry : produceResponse.responses()
-                                                                                                         .entrySet()) {
+                for (Map.Entry<TopicPartition, ProduceResponse.PartitionResponse> entry : produceResponse.responses().entrySet()) {
                     TopicPartition tp = entry.getKey();
                     ProduceResponse.PartitionResponse partResp = entry.getValue();
                     Errors error = Errors.forCode(partResp.errorCode);
                     RecordBatch batch = batches.get(tp);
-                    completeBatch(batch, error, partResp.baseOffset, correlationId, now);
+                    completeBatch(batch, error, partResp.baseOffset, partResp.timestamp, correlationId, now);
                 }
                 this.sensors.recordLatency(response.request().request().destination(), response.requestLatencyMs());
                 this.sensors.recordThrottleTime(response.request().request().destination(),
@@ -265,7 +283,7 @@ public class Sender implements Runnable {
             } else {
                 // this is the acks = 0 case, just complete all requests
                 for (RecordBatch batch : batches.values())
-                    completeBatch(batch, Errors.NONE, -1L, correlationId, now);
+                    completeBatch(batch, Errors.NONE, -1L, Record.NO_TIMESTAMP, correlationId, now);
             }
         }
     }
@@ -276,10 +294,11 @@ public class Sender implements Runnable {
      * @param batch The record batch
      * @param error The error (or null if none)
      * @param baseOffset The base offset assigned to the records if successful
+     * @param timestamp The timestamp returned by the broker for this batch
      * @param correlationId The correlation id for the request
      * @param now The current POSIX time stamp in milliseconds
      */
-    private void completeBatch(RecordBatch batch, Errors error, long baseOffset, long correlationId, long now) {
+    private void completeBatch(RecordBatch batch, Errors error, long baseOffset, long timestamp, long correlationId, long now) {
         if (error != Errors.NONE && canRetry(batch, error)) {
             // retry
             log.warn("Got error produce response with correlation id {} on topic-partition {}, retrying ({} attempts left). Error: {}",
@@ -289,17 +308,23 @@ public class Sender implements Runnable {
                      error);
             this.accumulator.reenqueue(batch, now);
             this.sensors.recordRetries(batch.topicPartition.topic(), batch.recordCount);
-        } else if (error == Errors.TOPIC_AUTHORIZATION_FAILED) {
-            batch.done(baseOffset, new TopicAuthorizationException(batch.topicPartition.topic()));
         } else {
+            RuntimeException exception;
+            if (error == Errors.TOPIC_AUTHORIZATION_FAILED)
+                exception = new TopicAuthorizationException(batch.topicPartition.topic());
+            else
+                exception = error.exception();
             // tell the user the result of their request
-            batch.done(baseOffset, error.exception());
+            batch.done(baseOffset, timestamp, exception);
             this.accumulator.deallocate(batch);
             if (error != Errors.NONE)
                 this.sensors.recordErrors(batch.topicPartition.topic(), batch.recordCount);
         }
         if (error.exception() instanceof InvalidMetadataException)
             metadata.requestUpdate();
+        // Unmute the completed partition.
+        if (guaranteeMessageOrder)
+            this.accumulator.unmutePartition(batch.topicPartition);
     }
 
     /**
@@ -339,6 +364,7 @@ public class Sender implements Runnable {
                 handleProduceResponse(response, recordsByPartition, time.milliseconds());
             }
         };
+
         return new ClientRequest(now, acks != 0, send, callback);
     }
 
@@ -367,65 +393,63 @@ public class Sender implements Runnable {
 
         public SenderMetrics(Metrics metrics) {
             this.metrics = metrics;
-            Map<String, String> metricTags = new LinkedHashMap<String, String>();
-            metricTags.put("client-id", clientId);
             String metricGrpName = "producer-metrics";
 
             this.batchSizeSensor = metrics.sensor("batch-size");
-            MetricName m = new MetricName("batch-size-avg", metricGrpName, "The average number of bytes sent per partition per-request.", metricTags);
+            MetricName m = metrics.metricName("batch-size-avg", metricGrpName, "The average number of bytes sent per partition per-request.");
             this.batchSizeSensor.add(m, new Avg());
-            m = new MetricName("batch-size-max", metricGrpName, "The max number of bytes sent per partition per-request.", metricTags);
+            m = metrics.metricName("batch-size-max", metricGrpName, "The max number of bytes sent per partition per-request.");
             this.batchSizeSensor.add(m, new Max());
 
             this.compressionRateSensor = metrics.sensor("compression-rate");
-            m = new MetricName("compression-rate-avg", metricGrpName, "The average compression rate of record batches.", metricTags);
+            m = metrics.metricName("compression-rate-avg", metricGrpName, "The average compression rate of record batches.");
             this.compressionRateSensor.add(m, new Avg());
 
             this.queueTimeSensor = metrics.sensor("queue-time");
-            m = new MetricName("record-queue-time-avg", metricGrpName, "The average time in ms record batches spent in the record accumulator.", metricTags);
+            m = metrics.metricName("record-queue-time-avg", metricGrpName, "The average time in ms record batches spent in the record accumulator.");
             this.queueTimeSensor.add(m, new Avg());
-            m = new MetricName("record-queue-time-max", metricGrpName, "The maximum time in ms record batches spent in the record accumulator.", metricTags);
+            m = metrics.metricName("record-queue-time-max", metricGrpName, "The maximum time in ms record batches spent in the record accumulator.");
             this.queueTimeSensor.add(m, new Max());
 
             this.requestTimeSensor = metrics.sensor("request-time");
-            m = new MetricName("request-latency-avg", metricGrpName, "The average request latency in ms", metricTags);
+            m = metrics.metricName("request-latency-avg", metricGrpName, "The average request latency in ms");
             this.requestTimeSensor.add(m, new Avg());
-            m = new MetricName("request-latency-max", metricGrpName, "The maximum request latency in ms", metricTags);
+            m = metrics.metricName("request-latency-max", metricGrpName, "The maximum request latency in ms");
             this.requestTimeSensor.add(m, new Max());
 
             this.produceThrottleTimeSensor = metrics.sensor("produce-throttle-time");
-            m = new MetricName("produce-throttle-time-avg", metricGrpName, "The average throttle time in ms", metricTags);
+            m = metrics.metricName("produce-throttle-time-avg", metricGrpName, "The average throttle time in ms");
             this.produceThrottleTimeSensor.add(m, new Avg());
-            m = new MetricName("produce-throttle-time-max", metricGrpName, "The maximum throttle time in ms", metricTags);
+            m = metrics.metricName("produce-throttle-time-max", metricGrpName, "The maximum throttle time in ms");
             this.produceThrottleTimeSensor.add(m, new Max());
 
             this.recordsPerRequestSensor = metrics.sensor("records-per-request");
-            m = new MetricName("record-send-rate", metricGrpName, "The average number of records sent per second.", metricTags);
+            m = metrics.metricName("record-send-rate", metricGrpName, "The average number of records sent per second.");
             this.recordsPerRequestSensor.add(m, new Rate());
-            m = new MetricName("records-per-request-avg", metricGrpName, "The average number of records per request.", metricTags);
+            m = metrics.metricName("records-per-request-avg", metricGrpName, "The average number of records per request.");
             this.recordsPerRequestSensor.add(m, new Avg());
 
             this.retrySensor = metrics.sensor("record-retries");
-            m = new MetricName("record-retry-rate", metricGrpName, "The average per-second number of retried record sends", metricTags);
+            m = metrics.metricName("record-retry-rate", metricGrpName, "The average per-second number of retried record sends");
             this.retrySensor.add(m, new Rate());
 
             this.errorSensor = metrics.sensor("errors");
-            m = new MetricName("record-error-rate", metricGrpName, "The average per-second number of record sends that resulted in errors", metricTags);
+            m = metrics.metricName("record-error-rate", metricGrpName, "The average per-second number of record sends that resulted in errors");
             this.errorSensor.add(m, new Rate());
 
             this.maxRecordSizeSensor = metrics.sensor("record-size-max");
-            m = new MetricName("record-size-max", metricGrpName, "The maximum record size", metricTags);
+            m = metrics.metricName("record-size-max", metricGrpName, "The maximum record size");
             this.maxRecordSizeSensor.add(m, new Max());
-            m = new MetricName("record-size-avg", metricGrpName, "The average record size", metricTags);
+            m = metrics.metricName("record-size-avg", metricGrpName, "The average record size");
             this.maxRecordSizeSensor.add(m, new Avg());
 
-            m = new MetricName("requests-in-flight", metricGrpName, "The current number of in-flight requests awaiting a response.", metricTags);
+            m = metrics.metricName("requests-in-flight", metricGrpName, "The current number of in-flight requests awaiting a response.");
             this.metrics.addMetric(m, new Measurable() {
                 public double measure(MetricConfig config, long now) {
                     return client.inFlightRequestCount();
                 }
             });
-            m = new MetricName("metadata-age", metricGrpName, "The age in seconds of the current producer metadata being used.", metricTags);
+            m = metrics.metricName("metadata-age", metricGrpName, "The age in seconds of the current producer metadata being used.");
             metrics.addMetric(m, new Measurable() {
                 public double measure(MetricConfig config, long now) {
                     return (now - metadata.lastSuccessfulUpdate()) / 1000.0;
@@ -440,32 +464,31 @@ public class Sender implements Runnable {
             Sensor topicRecordCount = this.metrics.getSensor(topicRecordsCountName);
             if (topicRecordCount == null) {
                 Map<String, String> metricTags = new LinkedHashMap<String, String>();
-                metricTags.put("client-id", clientId);
                 metricTags.put("topic", topic);
                 String metricGrpName = "producer-topic-metrics";
 
                 topicRecordCount = this.metrics.sensor(topicRecordsCountName);
-                MetricName m = new MetricName("record-send-rate", metricGrpName , metricTags);
+                MetricName m = this.metrics.metricName("record-send-rate", metricGrpName, metricTags);
                 topicRecordCount.add(m, new Rate());
 
                 String topicByteRateName = "topic." + topic + ".bytes";
                 Sensor topicByteRate = this.metrics.sensor(topicByteRateName);
-                m = new MetricName("byte-rate", metricGrpName , metricTags);
+                m = this.metrics.metricName("byte-rate", metricGrpName, metricTags);
                 topicByteRate.add(m, new Rate());
 
                 String topicCompressionRateName = "topic." + topic + ".compression-rate";
                 Sensor topicCompressionRate = this.metrics.sensor(topicCompressionRateName);
-                m = new MetricName("compression-rate", metricGrpName , metricTags);
+                m = this.metrics.metricName("compression-rate", metricGrpName, metricTags);
                 topicCompressionRate.add(m, new Avg());
 
                 String topicRetryName = "topic." + topic + ".record-retries";
                 Sensor topicRetrySensor = this.metrics.sensor(topicRetryName);
-                m = new MetricName("record-retry-rate", metricGrpName , metricTags);
+                m = this.metrics.metricName("record-retry-rate", metricGrpName, metricTags);
                 topicRetrySensor.add(m, new Rate());
 
                 String topicErrorName = "topic." + topic + ".record-errors";
                 Sensor topicErrorSensor = this.metrics.sensor(topicErrorName);
-                m = new MetricName("record-error-rate", metricGrpName , metricTags);
+                m = this.metrics.metricName("record-error-rate", metricGrpName, metricTags);
                 topicErrorSensor.add(m, new Rate());
             }
         }

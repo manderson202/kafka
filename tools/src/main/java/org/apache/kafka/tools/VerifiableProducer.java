@@ -74,13 +74,18 @@ public class VerifiableProducer {
     // Hook to trigger producing thread to stop sending messages
     private boolean stopProducing = false;
 
+    // Prefix (plus a dot separator) added to every value produced by verifiable producer
+    // if null, then values are produced without a prefix
+    private Integer valuePrefix;
+
     public VerifiableProducer(
-            Properties producerProps, String topic, int throughput, int maxMessages) {
+            Properties producerProps, String topic, int throughput, int maxMessages, Integer valuePrefix) {
 
         this.topic = topic;
         this.throughput = throughput;
         this.maxMessages = maxMessages;
-        this.producer = new KafkaProducer<String, String>(producerProps);
+        this.producer = new KafkaProducer<>(producerProps);
+        this.valuePrefix = valuePrefix;
     }
 
     /** Get the command-line argument parser. */
@@ -138,6 +143,14 @@ public class VerifiableProducer {
                 .metavar("CONFIG_FILE")
                 .help("Producer config properties file.");
 
+        parser.addArgument("--value-prefix")
+            .action(store())
+            .required(false)
+            .type(Integer.class)
+            .metavar("VALUE-PREFIX")
+            .dest("valuePrefix")
+            .help("If specified, each produced value will have this prefix with a dot separator");
+
         return parser;
     }
     
@@ -176,6 +189,7 @@ public class VerifiableProducer {
             String topic = res.getString("topic");
             int throughput = res.getInt("throughput");
             String configFile = res.getString("producer.config");
+            Integer valuePrefix = res.getInt("valuePrefix");
 
             Properties producerProps = new Properties();
             producerProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, res.getString("brokerList"));
@@ -194,7 +208,7 @@ public class VerifiableProducer {
                 }
             }
 
-            producer = new VerifiableProducer(producerProps, topic, throughput, maxMessages);
+            producer = new VerifiableProducer(producerProps, topic, throughput, maxMessages, valuePrefix);
         } catch (ArgumentParserException e) {
             if (args.length == 0) {
                 parser.printHelp();
@@ -222,9 +236,24 @@ public class VerifiableProducer {
         }
     }
 
+    /** Returns a string to publish: ether 'valuePrefix'.'val' or 'val' **/
+    public String getValue(long val) {
+        if (this.valuePrefix != null) {
+            return String.format("%d.%d", this.valuePrefix.intValue(), val);
+        }
+        return String.format("%d", val);
+    }
+
     /** Close the producer to flush any remaining messages. */
     public void close() {
         producer.close();
+        System.out.println(shutdownString());
+    }
+
+    String shutdownString() {
+        Map<String, Object> data = new HashMap<>();
+        data.put("name", "shutdown_complete");
+        return toJsonString(data);
     }
 
     /**
@@ -235,7 +264,6 @@ public class VerifiableProducer {
         assert e != null : "Expected non-null exception.";
 
         Map<String, Object> errorData = new HashMap<>();
-        errorData.put("class", this.getClass().toString());
         errorData.put("name", "producer_send_error");
 
         errorData.put("time_ms", nowMs);
@@ -252,7 +280,6 @@ public class VerifiableProducer {
         assert recordMetadata != null : "Expected non-null recordMetadata object.";
 
         Map<String, Object> successData = new HashMap<>();
-        successData.put("class", this.getClass().toString());
         successData.put("name", "producer_send_success");
 
         successData.put("time_ms", nowMs);
@@ -319,7 +346,6 @@ public class VerifiableProducer {
                 double avgThroughput = 1000 * ((producer.numAcked) / (double) (stopMs - startMs));
 
                 Map<String, Object> data = new HashMap<>();
-                data.put("class", producer.getClass().toString());
                 data.put("name", "tool_data");
                 data.put("sent", producer.numSent);
                 data.put("acked", producer.numAcked);
@@ -337,7 +363,8 @@ public class VerifiableProducer {
                 break;
             }
             long sendStartMs = System.currentTimeMillis();
-            producer.send(null, String.format("%d", i));
+
+            producer.send(null, producer.getValue(i));
 
             if (throttler.shouldThrottle(i, sendStartMs)) {
                 throttler.throttle();

@@ -21,7 +21,6 @@ import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
-import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.Producer;
@@ -30,6 +29,7 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.connect.errors.ConnectException;
@@ -45,6 +45,8 @@ import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.Future;
+
+import static java.util.Collections.singleton;
 
 /**
  * <p>
@@ -99,8 +101,11 @@ public class KafkaBasedLog<K, V> {
      * @param consumedCallback callback to invoke for each {@link ConsumerRecord} consumed when tailing the log
      * @param time Time interface
      */
-    public KafkaBasedLog(String topic, Map<String, Object> producerConfigs, Map<String, Object> consumerConfigs,
-                         Callback<ConsumerRecord<K, V>> consumedCallback, Time time) {
+    public KafkaBasedLog(String topic,
+                         Map<String, Object> producerConfigs,
+                         Map<String, Object> consumerConfigs,
+                         Callback<ConsumerRecord<K, V>> consumedCallback,
+                         Time time) {
         this.topic = topic;
         this.producerConfigs = producerConfigs;
         this.consumerConfigs = consumerConfigs;
@@ -140,9 +145,9 @@ public class KafkaBasedLog<K, V> {
         thread = new WorkThread();
         thread.start();
 
-        log.info("Finished reading KafakBasedLog for topic " + topic);
+        log.info("Finished reading KafkaBasedLog for topic " + topic);
 
-        log.info("Started KafakBasedLog for topic " + topic);
+        log.info("Started KafkaBasedLog for topic " + topic);
     }
 
     public void stop() {
@@ -189,11 +194,19 @@ public class KafkaBasedLog<K, V> {
      * @param callback the callback to invoke once the end of the log has been reached.
      */
     public void readToEnd(Callback<Void> callback) {
+        log.trace("Starting read to end log for topic {}", topic);
         producer.flush();
         synchronized (this) {
             readLogEndOffsetCallbacks.add(callback);
         }
         consumer.wakeup();
+    }
+
+    /**
+     * Flush the underlying producer to ensure that all pending writes have been sent.
+     */
+    public void flush() {
+        producer.flush();
     }
 
     /**
@@ -218,12 +231,18 @@ public class KafkaBasedLog<K, V> {
     private Producer<K, V> createProducer() {
         // Always require producer acks to all to ensure durable writes
         producerConfigs.put(ProducerConfig.ACKS_CONFIG, "all");
+
+        // Don't allow more than one in-flight request to prevent reordering on retry (if enabled)
+        producerConfigs.put(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, 1);
         return new KafkaProducer<>(producerConfigs);
     }
 
     private Consumer<K, V> createConsumer() {
         // Always force reset to the beginning of the log since this class wants to consume all available log data
         consumerConfigs.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+
+        // Turn off autocommit since we always want to consume the full log
+        consumerConfigs.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
         return new KafkaConsumer<>(consumerConfigs);
     }
 
@@ -250,7 +269,7 @@ public class KafkaBasedLog<K, V> {
         for (TopicPartition tp : assignment) {
             long offset = consumer.position(tp);
             offsets.put(tp, offset);
-            consumer.seekToEnd(tp);
+            consumer.seekToEnd(singleton(tp));
         }
 
         Map<TopicPartition, Long> endOffsets = new HashMap<>();
@@ -286,6 +305,10 @@ public class KafkaBasedLog<K, V> {
 
 
     private class WorkThread extends Thread {
+        public WorkThread() {
+            super("KafkaBasedLog Work Thread - " + topic);
+        }
+
         @Override
         public void run() {
             try {
@@ -300,6 +323,7 @@ public class KafkaBasedLog<K, V> {
                     if (numCallbacks > 0) {
                         try {
                             readToLogEnd();
+                            log.trace("Finished read to end log for topic {}", topic);
                         } catch (WakeupException e) {
                             // Either received another get() call and need to retry reading to end of log or stop() was
                             // called. Both are handled by restarting this loop.

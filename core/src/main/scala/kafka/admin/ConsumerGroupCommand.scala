@@ -29,6 +29,8 @@ import org.I0Itec.zkclient.exception.ZkNoNodeException
 import org.apache.kafka.clients.CommonClientConfigs
 import org.apache.kafka.clients.consumer.{ConsumerConfig, KafkaConsumer}
 import org.apache.kafka.common.TopicPartition
+import org.apache.kafka.common.errors.BrokerNotAvailableException
+import org.apache.kafka.common.protocol.{Errors, SecurityProtocol}
 import org.apache.kafka.common.security.JaasUtils
 import org.apache.kafka.common.serialization.StringDeserializer
 import org.apache.kafka.common.utils.Utils
@@ -105,7 +107,7 @@ object ConsumerGroupCommand {
     }
 
     protected def printDescribeHeader() {
-      println("GROUP, TOPIC, PARTITION, CURRENT OFFSET, LOG END OFFSET, LAG, OWNER")
+      println("%-30s %-30s %-10s %-15s %-15s %-15s %s".format("GROUP", "TOPIC", "PARTITION", "CURRENT-OFFSET", "LOG-END-OFFSET", "LAG", "OWNER"))
     }
 
     private def describePartition(group: String,
@@ -115,8 +117,7 @@ object ConsumerGroupCommand {
                                   ownerOpt: Option[String]) {
       def print(logEndOffset: Option[Long]): Unit = {
         val lag = offsetOpt.filter(_ != -1).flatMap(offset => logEndOffset.map(_ - offset))
-        println(Seq(group, topic, partition, offsetOpt.getOrElse("unknown"), logEndOffset.getOrElse("unknown"),
-          lag.getOrElse("unknown"), ownerOpt.getOrElse("none")).mkString(", "))
+        println("%-30s %-30s %-10s %-15s %-15s %-15s %s".format(group, topic, partition, offsetOpt.getOrElse("unknown"), logEndOffset.getOrElse("unknown"), lag.getOrElse("unknown"), ownerOpt.getOrElse("none")))
       }
       getLogEndOffset(topic, partition) match {
         case LogEndOffsetResult.LogEndOffset(logEndOffset) => print(Some(logEndOffset))
@@ -223,11 +224,11 @@ object ConsumerGroupCommand {
                 .format(group, topicAndPartition))
           }
         }
-        else if (offsetAndMetadata.error == ErrorMapping.NoError)
+        else if (offsetAndMetadata.error == Errors.NONE.code)
           offsetMap.put(topicAndPartition, offsetAndMetadata.offset)
         else
           println("Could not fetch offset from kafka for group %s partition %s due to %s."
-            .format(group, topicAndPartition, ErrorMapping.exceptionFor(offsetAndMetadata.error)))
+            .format(group, topicAndPartition, Errors.forCode(offsetAndMetadata.error).exception))
       }
       channel.disconnect()
       offsetMap.toMap
@@ -276,20 +277,10 @@ object ConsumerGroupCommand {
 
     private def getZkConsumer(brokerId: Int): Option[SimpleConsumer] = {
       try {
-        zkUtils.readDataMaybeNull(ZkUtils.BrokerIdsPath + "/" + brokerId)._1 match {
-          case Some(brokerInfoString) =>
-            Json.parseFull(brokerInfoString) match {
-              case Some(m) =>
-                val brokerInfo = m.asInstanceOf[Map[String, Any]]
-                val host = brokerInfo.get("host").get.asInstanceOf[String]
-                val port = brokerInfo.get("port").get.asInstanceOf[Int]
-                Some(new SimpleConsumer(host, port, 10000, 100000, "ConsumerGroupCommand"))
-              case None =>
-                throw new BrokerNotAvailableException("Broker id %d does not exist".format(brokerId))
-            }
-          case None =>
-            throw new BrokerNotAvailableException("Broker id %d does not exist".format(brokerId))
-        }
+        zkUtils.getBrokerInfo(brokerId)
+          .map(_.getBrokerEndPoint(SecurityProtocol.PLAINTEXT))
+          .map(endPoint => new SimpleConsumer(endPoint.host, endPoint.port, 10000, 100000, "ConsumerGroupCommand"))
+          .orElse(throw new BrokerNotAvailableException("Broker id %d does not exist".format(brokerId)))
       } catch {
         case t: Throwable =>
           println("Could not parse broker info due to " + t.getMessage)
@@ -311,22 +302,25 @@ object ConsumerGroupCommand {
     }
 
     protected def describeGroup(group: String) {
-      val consumerSummaries = adminClient.describeConsumerGroup(group)
-      if (consumerSummaries.isEmpty)
-        println(s"Consumer group `${group}` does not exist or is rebalancing.")
-      else {
-        val consumer = getConsumer()
-        printDescribeHeader()
-        consumerSummaries.foreach { consumerSummary =>
-          val topicPartitions = consumerSummary.assignment.map(tp => TopicAndPartition(tp.topic, tp.partition))
-          val partitionOffsets = topicPartitions.flatMap { topicPartition =>
-            Option(consumer.committed(new TopicPartition(topicPartition.topic, topicPartition.partition))).map { offsetAndMetadata =>
-              topicPartition -> offsetAndMetadata.offset
+      adminClient.describeConsumerGroup(group) match {
+        case None => println(s"Consumer group `${group}` does not exist.")
+        case Some(consumerSummaries) =>
+          if (consumerSummaries.isEmpty)
+            println(s"Consumer group `${group}` is rebalancing.")
+          else {
+            val consumer = getConsumer()
+            printDescribeHeader()
+            consumerSummaries.foreach { consumerSummary =>
+              val topicPartitions = consumerSummary.assignment.map(tp => TopicAndPartition(tp.topic, tp.partition))
+              val partitionOffsets = topicPartitions.flatMap { topicPartition =>
+                Option(consumer.committed(new TopicPartition(topicPartition.topic, topicPartition.partition))).map { offsetAndMetadata =>
+                  topicPartition -> offsetAndMetadata.offset
+                }
+              }.toMap
+              describeTopicPartition(group, topicPartitions, partitionOffsets.get,
+                _ => Some(s"${consumerSummary.clientId}_${consumerSummary.clientHost}"))
             }
-          }.toMap
-          describeTopicPartition(group, topicPartitions, partitionOffsets.get,
-            _ => Some(s"${consumerSummary.clientId}_${consumerSummary.clientHost}"))
-        }
+          }
       }
     }
 
@@ -334,7 +328,7 @@ object ConsumerGroupCommand {
       val consumer = getConsumer()
       val topicPartition = new TopicPartition(topic, partition)
       consumer.assign(List(topicPartition).asJava)
-      consumer.seekToEnd(topicPartition)
+      consumer.seekToEnd(List(topicPartition).asJava)
       val logEndOffset = consumer.position(topicPartition)
       LogEndOffsetResult.LogEndOffset(logEndOffset)
     }
@@ -388,7 +382,7 @@ object ConsumerGroupCommand {
     val GroupDoc = "The consumer group we wish to act on."
     val TopicDoc = "The topic whose consumer group information should be deleted."
     val ListDoc = "List all consumer groups."
-    val DescribeDoc = "Describe consumer group and list offset lag related to given group."
+    val DescribeDoc = "Describe consumer group and list offset lag (number of messages not yet processed) related to given group."
     val nl = System.getProperty("line.separator")
     val DeleteDoc = "Pass in groups to delete topic partition offsets and ownership information " +
       "over the entire consumer group. For instance --group g1 --group g2" + nl +

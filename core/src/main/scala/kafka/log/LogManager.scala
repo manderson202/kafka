@@ -19,11 +19,13 @@ package kafka.log
 
 import java.io._
 import java.util.concurrent.TimeUnit
+
 import kafka.utils._
+
 import scala.collection._
-import kafka.common.{TopicAndPartition, KafkaException}
-import kafka.server.{RecoveringFromUncleanShutdown, BrokerState, OffsetCheckpoint}
-import java.util.concurrent.{Executors, ExecutorService, ExecutionException, Future}
+import kafka.common.{KafkaException, TopicAndPartition}
+import kafka.server.{BrokerState, OffsetCheckpoint, RecoveringFromUncleanShutdown}
+import java.util.concurrent.{ExecutionException, ExecutorService, Executors, Future}
 
 /**
  * The entry point to the kafka log management subsystem. The log manager is responsible for log creation, retrieval, and cleaning.
@@ -130,10 +132,9 @@ class LogManager(val logDirs: Array[File],
       try {
         recoveryPoints = this.recoveryPointCheckpoints(dir).read
       } catch {
-        case e: Exception => {
+        case e: Exception =>
           warn("Error occured while reading recovery-point-offset-checkpoint file of directory " + dir, e)
           warn("Resetting the recovery checkpoint to 0")
-        }
       }
 
       val jobsForDir = for {
@@ -280,12 +281,14 @@ class LogManager(val logDirs: Array[File],
       // If the log does not exist, skip it
       if (log != null) {
         //May need to abort and pause the cleaning of the log, and resume after truncation is done.
-        val needToStopCleaner: Boolean = (truncateOffset < log.activeSegment.baseOffset)
+        val needToStopCleaner: Boolean = truncateOffset < log.activeSegment.baseOffset
         if (needToStopCleaner && cleaner != null)
           cleaner.abortAndPauseCleaning(topicAndPartition)
         log.truncateTo(truncateOffset)
-        if (needToStopCleaner && cleaner != null)
+        if (needToStopCleaner && cleaner != null) {
+          cleaner.maybeTruncateCheckpoint(log.dir.getParentFile, topicAndPartition, log.activeSegment.baseOffset)
           cleaner.resumeCleaning(topicAndPartition)
+        }
       }
     }
     checkpointRecoveryPointOffsets()
@@ -303,8 +306,10 @@ class LogManager(val logDirs: Array[File],
       if (cleaner != null)
         cleaner.abortAndPauseCleaning(topicAndPartition)
       log.truncateFullyAndStartAt(newOffset)
-      if (cleaner != null)
+      if (cleaner != null) {
+        cleaner.maybeTruncateCheckpoint(log.dir.getParentFile, topicAndPartition, log.activeSegment.baseOffset)
         cleaner.resumeCleaning(topicAndPartition)
+      }
     }
     checkpointRecoveryPointOffsets()
   }
@@ -463,7 +468,7 @@ class LogManager(val logDirs: Array[File],
   /**
    * Get a map of TopicAndPartition => Log
    */
-  def logsByTopicPartition = logs.toMap
+  def logsByTopicPartition: Map[TopicAndPartition, Log] = logs.toMap
 
   /**
    * Map of log dir to logs by topic and partitions in that dir

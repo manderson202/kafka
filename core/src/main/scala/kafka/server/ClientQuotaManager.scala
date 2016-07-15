@@ -76,7 +76,7 @@ class ClientQuotaManager(private val config: ClientQuotaManagerConfig,
   throttledRequestReaper.start()
 
   private val delayQueueSensor = metrics.sensor(apiKey + "-delayQueue")
-  delayQueueSensor.add(new MetricName("queue-size",
+  delayQueueSensor.add(metrics.metricName("queue-size",
                                       apiKey,
                                       "Tracks the size of the delay queue"), new Total())
 
@@ -120,9 +120,9 @@ class ClientQuotaManager(private val config: ClientQuotaManagerConfig,
         val clientMetric = metrics.metrics().get(clientRateMetricName(clientId))
         throttleTimeMs = throttleTime(clientMetric, getQuotaMetricConfig(quota(clientId)))
         clientSensors.throttleTimeSensor.record(throttleTimeMs)
+        // If delayed, add the element to the delayQueue
         delayQueue.add(new ThrottledResponse(time, throttleTimeMs, callback))
         delayQueueSensor.record()
-        // If delayed, add the element to the delayQueue
         logger.debug("Quota violated for sensor (%s). Delay time: (%d)".format(clientSensors.quotaSensor.name(), throttleTimeMs))
     }
     throttleTimeMs
@@ -157,7 +157,7 @@ class ClientQuotaManager(private val config: ClientQuotaManagerConfig,
    * Returns the quota for the specified clientId
    */
   def quota(clientId: String): Quota =
-    if (overriddenQuota.containsKey(clientId)) overriddenQuota.get(clientId) else defaultQuota;
+    if (overriddenQuota.containsKey(clientId)) overriddenQuota.get(clientId) else defaultQuota
 
   /*
    * This function either returns the sensors for a given client id or creates them if they don't exist
@@ -189,9 +189,9 @@ class ClientQuotaManager(private val config: ClientQuotaManagerConfig,
     }
 
     /* If the sensor is null, try to create it else return the created sensor
-     * Also if quota sensor is null, the throttle time sensor must be null
+     * Either of the sensors can be null, hence null checks on both
      */
-    if (quotaSensor == null) {
+    if (quotaSensor == null || throttleTimeSensor == null) {
       /* Acquire a write lock because the sensor may not have been created and we only want one thread to create it.
        * Note that multiple threads may acquire the write lock if they all see a null sensor initially
        * In this case, the writer checks the sensor after acquiring the lock again.
@@ -200,18 +200,24 @@ class ClientQuotaManager(private val config: ClientQuotaManagerConfig,
        */
       lock.writeLock().lock()
       try {
+        // Set the var for both sensors in case another thread has won the race to acquire the write lock. This will
+        // ensure that we initialise `ClientSensors` with non-null parameters.
         quotaSensor = metrics.getSensor(quotaSensorName)
-        if (quotaSensor == null) {
+        throttleTimeSensor = metrics.getSensor(throttleTimeSensorName)
+        if (throttleTimeSensor == null) {
           // create the throttle time sensor also. Use default metric config
           throttleTimeSensor = metrics.sensor(throttleTimeSensorName,
                                               null,
                                               ClientQuotaManagerConfig.InactiveSensorExpirationTimeSeconds)
-          throttleTimeSensor.add(new MetricName("throttle-time",
+          throttleTimeSensor.add(metrics.metricName("throttle-time",
                                                 apiKey,
                                                 "Tracking average throttle-time per client",
                                                 "client-id",
                                                 clientId), new Avg())
+        }
 
+
+        if (quotaSensor == null) {
           quotaSensor = metrics.sensor(quotaSensorName,
                                        getQuotaMetricConfig(quota(clientId)),
                                        ClientQuotaManagerConfig.InactiveSensorExpirationTimeSeconds)
@@ -271,7 +277,7 @@ class ClientQuotaManager(private val config: ClientQuotaManagerConfig,
   }
 
   private def clientRateMetricName(clientId: String): MetricName = {
-    new MetricName("byte-rate", apiKey,
+    metrics.metricName("byte-rate", apiKey,
                    "Tracking byte-rate per client",
                    "client-id", clientId)
   }

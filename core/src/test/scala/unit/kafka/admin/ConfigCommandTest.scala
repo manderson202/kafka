@@ -16,8 +16,8 @@
  */
 package kafka.admin
 
-import junit.framework.Assert._
 import kafka.admin.ConfigCommand.ConfigCommandOptions
+import org.junit.Assert._
 import org.junit.Test
 import kafka.utils.Logging
 import kafka.zk.ZooKeeperTestHarness
@@ -63,6 +63,6 @@ class ConfigCommandTest extends ZooKeeperTestHarness with Logging {
 
     val deletedProps = ConfigCommand.parseConfigsToBeDeleted(createOpts)
     assertEquals(1, deletedProps.size)
-    assertEquals("a", deletedProps(0))
+    assertEquals("a", deletedProps.head)
   }
 }

@@ -34,6 +34,7 @@ import org.junit.{Test, After, Before}
 
 import scala.collection._
 
+@deprecated("This test has been deprecated and it will be removed in a future release", "0.10.0.0")
 class ZookeeperConsumerConnectorTest extends KafkaServerTestHarness with Logging {
 
   val RebalanceBackoffMs = 5000
@@ -429,7 +430,7 @@ class ZookeeperConsumerConnectorTest extends KafkaServerTestHarness with Logging
   private class TestConsumerRebalanceListener extends ConsumerRebalanceListener {
     var beforeReleasingPartitionsCalled: Boolean = false
     var beforeStartingFetchersCalled: Boolean = false
-    var consumerId: String = "";
+    var consumerId: String = ""
     var partitionOwnership: java.util.Map[String, java.util.Set[java.lang.Integer]] = null
     var globalPartitionOwnership: java.util.Map[String, java.util.Map[java.lang.Integer, ConsumerThreadId]] = null
 

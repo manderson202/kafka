@@ -12,25 +12,23 @@
  */
 package org.apache.kafka.common.security.ssl;
 
-import javax.net.ssl.*;
-
 import java.io.File;
 import java.util.Map;
 
+import javax.net.ssl.SSLEngine;
+
 import org.apache.kafka.test.TestSslUtils;
 import org.apache.kafka.common.network.Mode;
-
 import org.junit.Test;
+
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertTrue;
 
-
 /**
  * A set of tests for the selector over ssl. These use a test harness that runs a simple socket server that echos back responses.
  */
-
 public class SslFactoryTest {
 
     @Test

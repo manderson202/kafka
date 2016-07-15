@@ -18,11 +18,28 @@
 package kafka.consumer
 
 import java.util.Properties
+import java.util.regex.Pattern
+
+import kafka.api.FetchRequestBuilder
+import kafka.api.OffsetRequest
+import kafka.api.Request
+import kafka.client.ClientUtils
+import kafka.cluster.BrokerEndPoint
 import kafka.common.StreamEndException
+import kafka.message.Message
+import kafka.common.TopicAndPartition
+import kafka.message.MessageAndOffset
+import kafka.utils.ToolsUtils
+
+import org.apache.kafka.clients.consumer.ConsumerRecord
+import org.apache.kafka.clients.consumer.internals.NoOpConsumerRebalanceListener
+import org.apache.kafka.common.record.TimestampType
+import org.apache.kafka.common.utils.Utils
+import org.apache.kafka.common.TopicPartition
 
 /**
  * A base consumer used to abstract both old and new consumer
- * this class should be removed (along with BaseProducer) be removed
+ * this class should be removed (along with BaseProducer)
  * once we deprecate old consumer
  */
 trait BaseConsumer {
@@ -32,16 +49,51 @@ trait BaseConsumer {
   def commit()
 }
 
-case class BaseConsumerRecord(topic: String, partition: Int, offset: Long, key: Array[Byte], value: Array[Byte])
+case class BaseConsumerRecord(topic: String,
+                              partition: Int,
+                              offset: Long,
+                              timestamp: Long = Message.NoTimestamp,
+                              timestampType: TimestampType = TimestampType.NO_TIMESTAMP_TYPE,
+                              key: Array[Byte],
+                              value: Array[Byte])
 
-class NewShinyConsumer(topic: String, consumerProps: Properties, val timeoutMs: Long = Long.MaxValue) extends BaseConsumer {
+class NewShinyConsumer(topic: Option[String], partitionId: Option[Int], offset: Option[Long], whitelist: Option[String], consumerProps: Properties, val timeoutMs: Long = Long.MaxValue) extends BaseConsumer {
   import org.apache.kafka.clients.consumer.KafkaConsumer
 
-import scala.collection.JavaConversions._
+  import scala.collection.JavaConversions._
 
   val consumer = new KafkaConsumer[Array[Byte], Array[Byte]](consumerProps)
-  consumer.subscribe(List(topic))
+  consumerInit()
   var recordIter = consumer.poll(0).iterator
+
+  def consumerInit() {
+    (topic, partitionId, offset, whitelist) match {
+      case (Some(topic), Some(partitionId), Some(offset), None) =>
+        seek(topic, partitionId, offset)
+      case (Some(topic), Some(partitionId), None, None) =>
+        // default to latest if no offset is provided
+        seek(topic, partitionId, OffsetRequest.LatestTime)
+      case (Some(topic), None, None, None) =>
+        consumer.subscribe(List(topic))
+      case (None, None, None, Some(whitelist)) =>
+        consumer.subscribe(Pattern.compile(whitelist), new NoOpConsumerRebalanceListener())
+      case _ =>
+        throw new IllegalArgumentException("An invalid combination of arguments is provided. " +
+            "Exactly one of 'topic' or 'whitelist' must be provided. " +
+            "If 'topic' is provided, an optional 'partition' may also be provided. " +
+            "If 'partition' is provided, an optional 'offset' may also be provided, otherwise, consumption starts from the end of the partition.")
+    }
+  }
+
+  def seek(topic: String, partitionId: Int, offset: Long) {
+    val topicPartition = new TopicPartition(topic, partitionId)
+    consumer.assign(List(topicPartition))
+    offset match {
+      case OffsetRequest.EarliestTime => consumer.seekToBeginning(List(topicPartition))
+      case OffsetRequest.LatestTime => consumer.seekToEnd(List(topicPartition))
+      case _ => consumer.seek(topicPartition, offset)
+    }
+  }
 
   override def receive(): BaseConsumerRecord = {
     if (!recordIter.hasNext) {
@@ -51,7 +103,13 @@ import scala.collection.JavaConversions._
     }
 
     val record = recordIter.next
-    BaseConsumerRecord(record.topic, record.partition, record.offset, record.key, record.value)
+    BaseConsumerRecord(record.topic,
+                       record.partition,
+                       record.offset,
+                       record.timestamp,
+                       record.timestampType,
+                       record.key,
+                       record.value)
   }
 
   override def stop() {
@@ -80,7 +138,13 @@ class OldConsumer(topicFilter: TopicFilter, consumerProps: Properties) extends B
       throw new StreamEndException
 
     val messageAndMetadata = iter.next
-    BaseConsumerRecord(messageAndMetadata.topic, messageAndMetadata.partition, messageAndMetadata.offset, messageAndMetadata.key, messageAndMetadata.message)
+    BaseConsumerRecord(messageAndMetadata.topic,
+                       messageAndMetadata.partition,
+                       messageAndMetadata.offset,
+                       messageAndMetadata.timestamp,
+                       messageAndMetadata.timestampType,
+                       messageAndMetadata.key,
+                       messageAndMetadata.message)
   }
 
   override def stop() {
@@ -95,4 +159,3 @@ class OldConsumer(topicFilter: TopicFilter, consumerProps: Properties) extends B
     this.consumerConnector.commitOffsets
   }
 }
-

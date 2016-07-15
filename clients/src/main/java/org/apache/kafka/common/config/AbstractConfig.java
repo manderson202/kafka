@@ -12,14 +12,21 @@
  */
 package org.apache.kafka.common.config;
 
-import java.util.*;
-
 import org.apache.kafka.common.Configurable;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.config.types.Password;
 import org.apache.kafka.common.utils.Utils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
 
 /**
  * A convenient base class for configurations to extend.
@@ -40,7 +47,7 @@ public class AbstractConfig {
     private final Map<String, Object> values;
 
     @SuppressWarnings("unchecked")
-    public AbstractConfig(ConfigDef definition, Map<?, ?> originals, Boolean doLog) {
+    public AbstractConfig(ConfigDef definition, Map<?, ?> originals, boolean doLog) {
         /* check that all the keys are really strings */
         for (Object key : originals.keySet())
             if (!(key instanceof String))
@@ -54,6 +61,12 @@ public class AbstractConfig {
 
     public AbstractConfig(ConfigDef definition, Map<?, ?> originals) {
         this(definition, originals, true);
+    }
+
+    public AbstractConfig(Map<String, Object> parsedConfig) {
+        this.values = parsedConfig;
+        this.originals = new HashMap<>();
+        this.used = Collections.synchronizedSet(new HashSet<String>());
     }
 
     protected Object get(String key) {
@@ -88,7 +101,7 @@ public class AbstractConfig {
         return (List<String>) get(key);
     }
 
-    public boolean getBoolean(String key) {
+    public Boolean getBoolean(String key) {
         return (Boolean) get(key);
     }
 
@@ -119,13 +132,14 @@ public class AbstractConfig {
     /**
      * Get all the original settings, ensuring that all values are of type String.
      * @return the original settings
-     * @throw ClassCastException if any of the values are not strings
+     * @throws ClassCastException if any of the values are not strings
      */
     public Map<String, String> originalsStrings() {
         Map<String, String> copy = new RecordingMap<>();
         for (Map.Entry<String, ?> entry : originals.entrySet()) {
             if (!(entry.getValue() instanceof String))
-                throw new ClassCastException("Non-string value found in original settings");
+                throw new ClassCastException("Non-string value found in original settings for key " + entry.getKey() +
+                        ": " + (entry.getValue() == null ? null : entry.getValue().getClass().getName()));
             copy.put(entry.getKey(), (String) entry.getValue());
         }
         return copy;
@@ -138,7 +152,7 @@ public class AbstractConfig {
      * @return a Map containing the settings with the prefix
      */
     public Map<String, Object> originalsWithPrefix(String prefix) {
-        Map<String, Object> result = new RecordingMap<>();
+        Map<String, Object> result = new RecordingMap<>(prefix);
         for (Map.Entry<String, ?> entry : originals.entrySet()) {
             if (entry.getKey().startsWith(prefix) && entry.getKey().length() > prefix.length())
                 result.put(entry.getKey().substring(prefix.length()), entry.getValue());
@@ -155,7 +169,8 @@ public class AbstractConfig {
         b.append(getClass().getSimpleName());
         b.append(" values: ");
         b.append(Utils.NL);
-        for (Map.Entry<String, Object> entry : this.values.entrySet()) {
+
+        for (Map.Entry<String, Object> entry : new TreeMap<>(this.values).entrySet()) {
             b.append('\t');
             b.append(entry.getKey());
             b.append(" = ");
@@ -189,13 +204,23 @@ public class AbstractConfig {
         if (!t.isInstance(o))
             throw new KafkaException(c.getName() + " is not an instance of " + t.getName());
         if (o instanceof Configurable)
-            ((Configurable) o).configure(this.originals);
+            ((Configurable) o).configure(originals());
         return t.cast(o);
     }
 
+    /**
+     * Get a list of configured instances of the given class specified by the given configuration key. The configuration
+     * may specify either null or an empty string to indicate no configured instances. In both cases, this method
+     * returns an empty list to indicate no configured instances.
+     * @param key The configuration key for the class
+     * @param t The interface the class should implement
+     * @return The list of configured instances
+     */
     public <T> List<T> getConfiguredInstances(String key, Class<T> t) {
         List<String> klasses = getList(key);
         List<T> objects = new ArrayList<T>();
+        if (klasses == null)
+            return objects;
         for (String klass : klasses) {
             Object o;
             try {
@@ -206,7 +231,7 @@ public class AbstractConfig {
             if (!t.isInstance(o))
                 throw new KafkaException(klass + " is not an instance of " + t.getName());
             if (o instanceof Configurable)
-                ((Configurable) o).configure(this.originals);
+                ((Configurable) o).configure(originals());
             objects.add(t.cast(o));
         }
         return objects;
@@ -233,16 +258,36 @@ public class AbstractConfig {
      */
     private class RecordingMap<V> extends HashMap<String, V> {
 
-        RecordingMap() {}
+        private final String prefix;
+
+        RecordingMap() {
+            this("");
+        }
+
+        RecordingMap(String prefix) {
+            this.prefix = prefix;
+        }
 
         RecordingMap(Map<String, ? extends V> m) {
+            this(m, "");
+        }
+
+        RecordingMap(Map<String, ? extends V> m, String prefix) {
             super(m);
+            this.prefix = prefix;
         }
 
         @Override
         public V get(Object key) {
-            if (key instanceof String)
-                ignore((String) key);
+            if (key instanceof String) {
+                String keyWithPrefix;
+                if (prefix.isEmpty()) {
+                    keyWithPrefix = (String) key;
+                } else {
+                    keyWithPrefix = prefix + key;
+                }
+                ignore(keyWithPrefix);
+            }
             return super.get(key);
         }
     }

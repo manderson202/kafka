@@ -19,7 +19,6 @@ package kafka.api
 
 import java.util.concurrent.{ExecutionException, TimeUnit, TimeoutException}
 import java.util.{Properties, Random}
-
 import kafka.common.Topic
 import kafka.consumer.SimpleConsumer
 import kafka.integration.KafkaServerTestHarness
@@ -31,6 +30,7 @@ import org.apache.kafka.common.KafkaException
 import org.apache.kafka.common.errors.{InvalidTopicException, NotEnoughReplicasAfterAppendException, NotEnoughReplicasException}
 import org.junit.Assert._
 import org.junit.{After, Before, Test}
+import org.apache.kafka.common.internals.TopicConstants
 
 class ProducerFailureHandlingTest extends KafkaServerTestHarness {
   private val producerBufferSize = 30000
@@ -63,17 +63,20 @@ class ProducerFailureHandlingTest extends KafkaServerTestHarness {
   override def setUp() {
     super.setUp()
 
-    producer1 = TestUtils.createNewProducer(brokerList, acks = 0, blockOnBufferFull = false, bufferSize = producerBufferSize)
-    producer2 = TestUtils.createNewProducer(brokerList, acks = 1, blockOnBufferFull = false, bufferSize = producerBufferSize)
-    producer3 = TestUtils.createNewProducer(brokerList, acks = -1, blockOnBufferFull = false, bufferSize = producerBufferSize)
+    producer1 = TestUtils.createNewProducer(brokerList, acks = 0, requestTimeoutMs = 30000L, maxBlockMs = 10000L,
+      bufferSize = producerBufferSize)
+    producer2 = TestUtils.createNewProducer(brokerList, acks = 1, requestTimeoutMs = 30000L, maxBlockMs = 10000L,
+      bufferSize = producerBufferSize)
+    producer3 = TestUtils.createNewProducer(brokerList, acks = -1, requestTimeoutMs = 30000L, maxBlockMs = 10000L,
+      bufferSize = producerBufferSize)
   }
 
   @After
   override def tearDown() {
-    if (producer1 != null) producer1.close
-    if (producer2 != null) producer2.close
-    if (producer3 != null) producer3.close
-    if (producer4 != null) producer4.close
+    if (producer1 != null) producer1.close()
+    if (producer2 != null) producer2.close()
+    if (producer3 != null) producer3.close()
+    if (producer4 != null) producer4.close()
 
     super.tearDown()
   }
@@ -134,7 +137,7 @@ class ProducerFailureHandlingTest extends KafkaServerTestHarness {
     TestUtils.createTopic(zkUtils, topic1, 1, numServers, servers)
 
     // producer with incorrect broker list
-    producer4 = TestUtils.createNewProducer("localhost:8686,localhost:4242", acks = 1, blockOnBufferFull = false, bufferSize = producerBufferSize)
+    producer4 = TestUtils.createNewProducer("localhost:8686,localhost:4242", acks = 1, maxBlockMs = 10000L, bufferSize = producerBufferSize)
 
     // send a record with incorrect broker list
     val record = new ProducerRecord[Array[Byte],Array[Byte]](topic1, null, "key".getBytes, "value".getBytes)
@@ -180,15 +183,15 @@ class ProducerFailureHandlingTest extends KafkaServerTestHarness {
     producer3.send(record).get
 
     intercept[IllegalStateException] {
-      producer1.close
+      producer1.close()
       producer1.send(record)
     }
     intercept[IllegalStateException] {
-      producer2.close
+      producer2.close()
       producer2.send(record)
     }
     intercept[IllegalStateException] {
-      producer3.close
+      producer3.close()
       producer3.send(record)
     }
 
@@ -198,7 +201,7 @@ class ProducerFailureHandlingTest extends KafkaServerTestHarness {
   @Test
   def testCannotSendToInternalTopic() {
     val thrown = intercept[ExecutionException] {
-      producer2.send(new ProducerRecord[Array[Byte],Array[Byte]](Topic.InternalTopics.head, "test".getBytes, "test".getBytes)).get
+      producer2.send(new ProducerRecord[Array[Byte],Array[Byte]](TopicConstants.INTERNAL_TOPICS.iterator.next, "test".getBytes, "test".getBytes)).get
     }
     assertTrue("Unexpected exception while sending to an invalid topic " + thrown.getCause, thrown.getCause.isInstanceOf[InvalidTopicException])
   }
@@ -280,7 +283,7 @@ class ProducerFailureHandlingTest extends KafkaServerTestHarness {
 
     override def shutdown(){
       super.shutdown()
-      producer.close
+      producer.close()
     }
   }
 }

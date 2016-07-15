@@ -20,39 +20,23 @@ package kafka.api
 import java.nio.ByteBuffer
 
 import kafka.api.ApiUtils._
-import kafka.common.ErrorMapping
 import kafka.network.{RequestOrResponseSend, RequestChannel}
 import kafka.network.RequestChannel.Response
 import kafka.utils.Logging
+import org.apache.kafka.common.protocol.{ApiKeys, Errors}
 
 import scala.collection.mutable.ListBuffer
 
 object TopicMetadataRequest extends Logging {
   val CurrentVersion = 0.shortValue
   val DefaultClientId = ""
-
-  /**
-   * TopicMetadataRequest has the following format -
-   * number of topics (4 bytes) list of topics (2 bytes + topic.length per topic) detailedMetadata (2 bytes) timestamp (8 bytes) count (4 bytes)
-   */
-
-  def readFrom(buffer: ByteBuffer): TopicMetadataRequest = {
-    val versionId = buffer.getShort
-    val correlationId = buffer.getInt
-    val clientId = readShortString(buffer)
-    val numTopics = readIntInRange(buffer, "number of topics", (0, Int.MaxValue))
-    val topics = new ListBuffer[String]()
-    for(i <- 0 until numTopics)
-      topics += readShortString(buffer)
-    new TopicMetadataRequest(versionId, correlationId, clientId, topics.toList)
-  }
 }
 
 case class TopicMetadataRequest(versionId: Short,
                                 correlationId: Int,
                                 clientId: String,
                                 topics: Seq[String])
- extends RequestOrResponse(Some(RequestKeys.MetadataKey)){
+ extends RequestOrResponse(Some(ApiKeys.METADATA.id)){
 
   def this(topics: Seq[String], correlationId: Int) =
     this(TopicMetadataRequest.CurrentVersion, correlationId, TopicMetadataRequest.DefaultClientId, topics)
@@ -73,13 +57,13 @@ case class TopicMetadataRequest(versionId: Short,
     topics.foldLeft(0)(_ + shortStringLength(_)) /* topics */
   }
 
-  override def toString(): String = {
+  override def toString: String = {
     describe(true)
   }
 
   override def handleError(e: Throwable, requestChannel: RequestChannel, request: RequestChannel.Request): Unit = {
     val topicMetadata = topics.map {
-      topic => TopicMetadata(topic, Nil, ErrorMapping.codeFor(e.getClass.asInstanceOf[Class[Throwable]]))
+      topic => TopicMetadata(topic, Nil, Errors.forException(e).code)
     }
     val errorResponse = TopicMetadataResponse(Seq(), topicMetadata, correlationId)
     requestChannel.sendResponse(new Response(request, new RequestOrResponseSend(request.connectionId, errorResponse)))

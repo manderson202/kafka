@@ -20,26 +20,118 @@ then
   exit 1
 fi
 
+if [ -z "$INCLUDE_TEST_JARS" ]; then
+  INCLUDE_TEST_JARS=false
+fi
 
-# This will set MAPR_HOME, etc.
-source `which mapr-config.sh` # Both "mapr" and "mapr-config.sh" are symlinked in "/usr/bin"
-
-# Set up Java classpath, start with $MAPR_CONF
-CLASSPATH=$MAPR_CONF
-# Add MapR jars
-CLASSPATH=$CLASSPATH:$(get_mapr_core_jars) # function in mapr-config.sh
-# Add logger jars
-CLASSPATH=$CLASSPATH:$(get_logger_jars) # function in mapr-config.sh
-# Add 3rd party jars
-CLASSPATH=$CLASSPATH:$(get_external_jars) # function in mapr-config.sh
+# Exclude jars not necessary for running commands.
+regex="(-(test|src|scaladoc|javadoc)\.jar|jar.asc)$"
+should_include_file() {
+  if [ "$INCLUDE_TEST_JARS" = true ]; then
+    return 0
+  fi
+  file=$1
+  if [ -z "$(echo "$file" | egrep "$regex")" ] ; then
+    return 0
+  else
+    return 1
+  fi
+}
 
 base_dir=$(dirname $0)/..
+
+if [ -z "$SCALA_VERSION" ]; then
+	SCALA_VERSION=2.10.6
+fi
+
+if [ -z "$SCALA_BINARY_VERSION" ]; then
+	SCALA_BINARY_VERSION=2.10
+fi
+
+# run ./gradlew copyDependantLibs to get all dependant jars in a local dir
+shopt -s nullglob
+for dir in "$base_dir"/core/build/dependant-libs-${SCALA_VERSION}*;
+do
+  if [ -z "$CLASSPATH" ] ; then
+    CLASSPATH="$dir/*"
+  else
+    CLASSPATH="$CLASSPATH:$dir/*"
+  fi
+done
+
+for file in "$base_dir"/examples/build/libs/kafka-examples*.jar;
+do
+  if should_include_file "$file"; then
+    CLASSPATH="$CLASSPATH":"$file"
+  fi
+done
+
+for file in "$base_dir"/clients/build/libs/kafka-clients*.jar;
+do
+  if should_include_file "$file"; then
+    CLASSPATH="$CLASSPATH":"$file"
+  fi
+done
+
+for file in "$base_dir"/streams/build/libs/kafka-streams*.jar;
+do
+  if should_include_file "$file"; then
+    CLASSPATH="$CLASSPATH":"$file"
+  fi
+done
+
+for file in "$base_dir"/streams/examples/build/libs/kafka-streams-examples*.jar;
+do
+  if should_include_file "$file"; then
+    CLASSPATH="$CLASSPATH":"$file"
+  fi
+done
+
+for file in "$base_dir"/streams/build/dependant-libs-${SCALA_VERSION}/rocksdb*.jar;
+do
+  CLASSPATH="$CLASSPATH":"$file"
+done
+
+for file in "$base_dir"/tools/build/libs/kafka-tools*.jar;
+do
+  if should_include_file "$file"; then
+    CLASSPATH="$CLASSPATH":"$file"
+  fi
+done
+
+for dir in "$base_dir"/tools/build/dependant-libs-${SCALA_VERSION}*;
+do
+  CLASSPATH="$CLASSPATH:$dir/*"
+done
+
+for cc_pkg in "api" "runtime" "file" "json" "tools"
+do
+  for file in "$base_dir"/connect/${cc_pkg}/build/libs/connect-${cc_pkg}*.jar;
+  do
+    if should_include_file "$file"; then
+      CLASSPATH="$CLASSPATH":"$file"
+    fi
+  done
+  if [ -d "$base_dir/connect/${cc_pkg}/build/dependant-libs" ] ; then
+    CLASSPATH="$CLASSPATH:$base_dir/connect/${cc_pkg}/build/dependant-libs/*"
+  fi
+done
+
 # classpath addition for release
-CLASSPATH=$CLASSPATH:$base_dir/libs/*
+for file in "$base_dir"/libs/*;
+do
+  if should_include_file "$file"; then
+    CLASSPATH="$CLASSPATH":"$file"
+  fi
+done
 
-
-# Add native library path to LD_LIBRARY_PATH
-export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$(get_hadoop_libpath)"
+for file in "$base_dir"/core/build/libs/kafka_${SCALA_BINARY_VERSION}*.jar;
+do
+  if should_include_file "$file"; then
+    CLASSPATH="$CLASSPATH":"$file"
+  fi
+done
+shopt -u nullglob
 
 # JMX settings
 if [ -z "$KAFKA_JMX_OPTS" ]; then
@@ -72,6 +164,26 @@ KAFKA_LOG4J_OPTS="-Dkafka.logs.dir=$LOG_DIR $KAFKA_LOG4J_OPTS"
 # Generic jvm settings you want to add
 if [ -z "$KAFKA_OPTS" ]; then
   KAFKA_OPTS=""
+fi
+
+# Set Debug options if enabled
+if [ "x$KAFKA_DEBUG" != "x" ]; then
+
+    # Use default ports
+    DEFAULT_JAVA_DEBUG_PORT="5005"
+
+    if [ -z "$JAVA_DEBUG_PORT" ]; then
+        JAVA_DEBUG_PORT="$DEFAULT_JAVA_DEBUG_PORT"
+    fi
+
+    # Use the defaults if JAVA_DEBUG_OPTS was not set
+    DEFAULT_JAVA_DEBUG_OPTS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=${DEBUG_SUSPEND_FLAG:-n},address=$JAVA_DEBUG_PORT"
+    if [ -z "$JAVA_DEBUG_OPTS" ]; then
+        JAVA_DEBUG_OPTS="$DEFAULT_JAVA_DEBUG_OPTS"
+    fi
+
+    echo "Enabling Java debug options: $JAVA_DEBUG_OPTS"
+    KAFKA_OPTS="$JAVA_DEBUG_OPTS $KAFKA_OPTS"
 fi
 
 # Which java to use

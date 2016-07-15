@@ -24,10 +24,10 @@ import java.util.Properties
 import org.apache.kafka.clients.producer.KafkaProducer
 import kafka.server.KafkaConfig
 import kafka.integration.KafkaServerTestHarness
-
 import org.junit.{After, Before}
 import scala.collection.mutable.Buffer
 import kafka.coordinator.GroupCoordinator
+import org.apache.kafka.common.internals.TopicConstants
 
 /**
  * A helper class for writing integration tests that involve producers, consumers, and servers
@@ -46,34 +46,42 @@ trait IntegrationTestHarness extends KafkaServerTestHarness {
 
   override def generateConfigs() = {
     val cfgs = TestUtils.createBrokerConfigs(serverCount, zkConnect, interBrokerSecurityProtocol = Some(securityProtocol),
-      trustStoreFile = trustStoreFile)
+      trustStoreFile = trustStoreFile, saslProperties = saslProperties)
     cfgs.foreach(_.putAll(serverConfig))
     cfgs.map(KafkaConfig.fromProps)
   }
 
   @Before
   override def setUp() {
+    val producerSecurityProps = TestUtils.producerSecurityConfigs(securityProtocol, trustStoreFile, saslProperties)
+    val consumerSecurityProps = TestUtils.consumerSecurityConfigs(securityProtocol, trustStoreFile, saslProperties)
     super.setUp()
-    producerConfig.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, brokerList)
     producerConfig.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, classOf[org.apache.kafka.common.serialization.ByteArraySerializer])
     producerConfig.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, classOf[org.apache.kafka.common.serialization.ByteArraySerializer])
-    producerConfig.putAll(TestUtils.producerSecurityConfigs(securityProtocol, trustStoreFile))
-    consumerConfig.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, brokerList)
+    producerConfig.putAll(producerSecurityProps)
     consumerConfig.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, classOf[org.apache.kafka.common.serialization.ByteArrayDeserializer])
     consumerConfig.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, classOf[org.apache.kafka.common.serialization.ByteArrayDeserializer])
-    consumerConfig.putAll(TestUtils.consumerSecurityConfigs(securityProtocol, trustStoreFile))
+    consumerConfig.putAll(consumerSecurityProps)
     for (i <- 0 until producerCount)
-      producers += new KafkaProducer(producerConfig)
+      producers += TestUtils.createNewProducer(brokerList,
+                                               securityProtocol = this.securityProtocol,
+                                               trustStoreFile = this.trustStoreFile,
+                                               saslProperties = this.saslProperties,
+                                               props = Some(producerConfig))
     for (i <- 0 until consumerCount) {
-      consumers += new KafkaConsumer(consumerConfig)
+      consumers += TestUtils.createNewConsumer(brokerList,
+                                               securityProtocol = this.securityProtocol,
+                                               trustStoreFile = this.trustStoreFile,
+                                               saslProperties = this.saslProperties,
+                                               props = Some(consumerConfig))
     }
 
     // create the consumer offset topic
-    TestUtils.createTopic(zkUtils, GroupCoordinator.GroupMetadataTopicName,
+    TestUtils.createTopic(zkUtils, TopicConstants.GROUP_METADATA_TOPIC_NAME,
       serverConfig.getProperty(KafkaConfig.OffsetsTopicPartitionsProp).toInt,
       serverConfig.getProperty(KafkaConfig.OffsetsTopicReplicationFactorProp).toInt,
       servers,
-      servers(0).consumerCoordinator.offsetsTopicConfigs)
+      servers.head.groupCoordinator.offsetsTopicConfigs)
   }
 
   @After

@@ -23,7 +23,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.ByteBuffer;
-import java.util.*;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.Future;
 
 /**
@@ -159,6 +161,7 @@ public class OffsetStorageWriter {
 
         // And submit the data
         log.debug("Submitting {} entries to backing store", offsetsSerialized.size());
+        log.debug("The offsets are: " + toFlush.toString());
         return backingStore.set(offsetsSerialized, new Callback<Void>() {
             @Override
             public void onCompletion(Throwable error, Void result) {

@@ -21,7 +21,12 @@ import org.apache.kafka.common.protocol.types.Schema;
 import org.apache.kafka.common.protocol.types.Struct;
 
 import java.nio.ByteBuffer;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 public class StopReplicaRequest extends AbstractRequest {
     private static final Schema CURRENT_SCHEMA = ProtoUtils.currentRequestSchema(ApiKeys.STOP_REPLICA.id);
@@ -44,7 +49,7 @@ public class StopReplicaRequest extends AbstractRequest {
 
         struct.set(CONTROLLER_ID_KEY_NAME, controllerId);
         struct.set(CONTROLLER_EPOCH_KEY_NAME, controllerEpoch);
-        struct.set(DELETE_PARTITIONS_KEY_NAME, deletePartitions ? (byte) 1 : (byte) 0);
+        struct.set(DELETE_PARTITIONS_KEY_NAME, deletePartitions);
 
         List<Struct> partitionDatas = new ArrayList<>(partitions.size());
         for (TopicPartition partition : partitions) {
@@ -75,7 +80,7 @@ public class StopReplicaRequest extends AbstractRequest {
 
         controllerId = struct.getInt(CONTROLLER_ID_KEY_NAME);
         controllerEpoch = struct.getInt(CONTROLLER_EPOCH_KEY_NAME);
-        deletePartitions = ((byte) struct.get(DELETE_PARTITIONS_KEY_NAME)) != 0;
+        deletePartitions = struct.getBoolean(DELETE_PARTITIONS_KEY_NAME);
     }
 
     @Override
@@ -115,6 +120,6 @@ public class StopReplicaRequest extends AbstractRequest {
     }
 
     public static StopReplicaRequest parse(ByteBuffer buffer) {
-        return new StopReplicaRequest((Struct) CURRENT_SCHEMA.read(buffer));
+        return new StopReplicaRequest(CURRENT_SCHEMA.read(buffer));
     }
 }

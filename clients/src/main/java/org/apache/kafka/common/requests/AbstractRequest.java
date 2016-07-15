@@ -36,7 +36,8 @@ public abstract class AbstractRequest extends AbstractRequestResponse {
      * Factory method for getting a request object based on ApiKey ID and a buffer
      */
     public static AbstractRequest getRequest(int requestId, int versionId, ByteBuffer buffer) {
-        switch (ApiKeys.forId(requestId)) {
+        ApiKeys apiKey = ApiKeys.forId(requestId);
+        switch (apiKey) {
             case PRODUCE:
                 return ProduceRequest.parse(buffer, versionId);
             case FETCH:
@@ -71,8 +72,15 @@ public abstract class AbstractRequest extends AbstractRequestResponse {
                 return DescribeGroupsRequest.parse(buffer, versionId);
             case LIST_GROUPS:
                 return ListGroupsRequest.parse(buffer, versionId);
+            case SASL_HANDSHAKE:
+                return SaslHandshakeRequest.parse(buffer, versionId);
+            case API_VERSIONS:
+                return ApiVersionsRequest.parse(buffer, versionId);
+            case CREATE_TOPICS:
+                return CreateTopicsRequest.parse(buffer, versionId);
             default:
-                return null;
+                throw new AssertionError(String.format("ApiKey %s is not currently handled in `getRequest`, the " +
+                        "code should be updated to do so.", apiKey));
         }
     }
 }

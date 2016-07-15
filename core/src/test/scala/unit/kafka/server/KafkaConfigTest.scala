@@ -19,13 +19,13 @@ package kafka.server
 
 import java.util.Properties
 
-import junit.framework.Assert._
-import kafka.api.{ApiVersion, KAFKA_082}
+import kafka.api.{ApiVersion, KAFKA_0_8_2}
 import kafka.message._
 import kafka.utils.{CoreUtils, TestUtils}
 import org.apache.kafka.common.config.ConfigException
 import org.apache.kafka.common.protocol.SecurityProtocol
-import org.junit.{Assert, Test}
+import org.junit.Assert._
+import org.junit.Test
 import org.scalatest.Assertions.intercept
 
 class KafkaConfigTest {
@@ -235,6 +235,16 @@ class KafkaConfigTest {
   }
 
   @Test
+  def testCaseInsensitiveListenerProtocol() {
+    val props = new Properties()
+    props.put(KafkaConfig.BrokerIdProp, "1")
+    props.put(KafkaConfig.ZkConnectProp, "localhost:2181")
+    props.put(KafkaConfig.ListenersProp, "plaintext://localhost:9091,SsL://localhost:9092")
+
+    assert(isValidKafkaConfig(props))
+  }
+
+  @Test
   def testListenerDefaults() {
     val props = new Properties()
     props.put(KafkaConfig.BrokerIdProp, "1")
@@ -271,17 +281,21 @@ class KafkaConfigTest {
     val conf = KafkaConfig.fromProps(props)
     assertEquals(ApiVersion.latestVersion, conf.interBrokerProtocolVersion)
 
-    props.put(KafkaConfig.InterBrokerProtocolVersionProp,"0.8.2.0")
+    props.put(KafkaConfig.InterBrokerProtocolVersionProp, "0.8.2.0")
+    // We need to set the message format version to make the configuration valid.
+    props.put(KafkaConfig.LogMessageFormatVersionProp, "0.8.2.0")
     val conf2 = KafkaConfig.fromProps(props)
-    assertEquals(KAFKA_082, conf2.interBrokerProtocolVersion)
+    assertEquals(KAFKA_0_8_2, conf2.interBrokerProtocolVersion)
 
     // check that 0.8.2.0 is the same as 0.8.2.1
-    props.put(KafkaConfig.InterBrokerProtocolVersionProp,"0.8.2.1")
+    props.put(KafkaConfig.InterBrokerProtocolVersionProp, "0.8.2.1")
+    // We need to set the message format version to make the configuration valid
+    props.put(KafkaConfig.LogMessageFormatVersionProp, "0.8.2.1")
     val conf3 = KafkaConfig.fromProps(props)
-    assertEquals(KAFKA_082, conf3.interBrokerProtocolVersion)
+    assertEquals(KAFKA_0_8_2, conf3.interBrokerProtocolVersion)
 
     //check that latest is newer than 0.8.2
-    assert(ApiVersion.latestVersion.onOrAfter(conf3.interBrokerProtocolVersion))
+    assert(ApiVersion.latestVersion >= conf3.interBrokerProtocolVersion)
   }
 
   private def isValidKafkaConfig(props: Properties): Boolean = {
@@ -383,6 +397,34 @@ class KafkaConfigTest {
   }
 
   @Test
+  def testInvalidInterBrokerSecurityProtocol() {
+    val props = TestUtils.createBrokerConfig(0, TestUtils.MockZkConnect, port = 8181)
+    props.put(KafkaConfig.ListenersProp, "SSL://localhost:0")
+    props.put(KafkaConfig.InterBrokerSecurityProtocolProp, SecurityProtocol.PLAINTEXT.toString)
+    intercept[IllegalArgumentException] {
+      KafkaConfig.fromProps(props)
+    }
+  }
+
+  @Test
+  def testEqualAdvertisedListenersProtocol() {
+    val props = TestUtils.createBrokerConfig(0, TestUtils.MockZkConnect, port = 8181)
+    props.put(KafkaConfig.ListenersProp, "PLAINTEXT://localhost:9092,SSL://localhost:9093")
+    props.put(KafkaConfig.AdvertisedListenersProp, "PLAINTEXT://localhost:9092,SSL://localhost:9093")
+    KafkaConfig.fromProps(props)
+  }
+
+  @Test
+  def testInvalidAdvertisedListenersProtocol() {
+    val props = TestUtils.createBrokerConfig(0, TestUtils.MockZkConnect, port = 8181)
+    props.put(KafkaConfig.ListenersProp, "TRACE://localhost:9091,SSL://localhost:9093")
+    props.put(KafkaConfig.AdvertisedListenersProp, "PLAINTEXT://localhost:9092")
+    intercept[IllegalArgumentException] {
+      KafkaConfig.fromProps(props)
+    }
+  }
+
+  @Test
   def testFromPropsInvalid() {
     def getBaseProperties(): Properties = {
       val validRequiredProperties = new Properties()
@@ -408,7 +450,7 @@ class KafkaConfigTest {
         case KafkaConfig.RequestTimeoutMsProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_number")
 
         case KafkaConfig.AuthorizerClassNameProp => //ignore string
-          
+
         case KafkaConfig.PortProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_number")
         case KafkaConfig.HostNameProp => // ignore string
         case KafkaConfig.AdvertisedHostNameProp => //ignore string
@@ -422,7 +464,7 @@ class KafkaConfigTest {
         case KafkaConfig.NumPartitionsProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_number", "0")
         case KafkaConfig.LogDirsProp => // ignore string
         case KafkaConfig.LogDirProp => // ignore string
-        case KafkaConfig.LogSegmentBytesProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_number", Message.MinHeaderSize - 1)
+        case KafkaConfig.LogSegmentBytesProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_number", Message.MinMessageOverhead - 1)
 
         case KafkaConfig.LogRollTimeMillisProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_number", "0")
         case KafkaConfig.LogRollTimeHoursProp => assertPropertyInvalid(getBaseProperties(), name, "not_a_number", "0")
@@ -488,7 +530,7 @@ class KafkaConfigTest {
         case KafkaConfig.MetricNumSamplesProp => assertPropertyInvalid(getBaseProperties, name, "not_a_number", "-1", "0")
         case KafkaConfig.MetricSampleWindowMsProp => assertPropertyInvalid(getBaseProperties, name, "not_a_number", "-1", "0")
         case KafkaConfig.MetricReporterClassesProp => // ignore string
-
+        case KafkaConfig.RackProp => // ignore string
         //SSL Configs
         case KafkaConfig.PrincipalBuilderClassProp =>
         case KafkaConfig.SslProtocolProp => // ignore string
@@ -508,6 +550,8 @@ class KafkaConfigTest {
         case KafkaConfig.SslCipherSuitesProp => // ignore string
 
         //Sasl Configs
+        case KafkaConfig.SaslMechanismInterBrokerProtocolProp => // ignore
+        case KafkaConfig.SaslEnabledMechanismsProp =>
         case KafkaConfig.SaslKerberosServiceNameProp => // ignore string
         case KafkaConfig.SaslKerberosKinitCmdProp =>
         case KafkaConfig.SaslKerberosTicketRenewWindowFactorProp =>
@@ -526,6 +570,7 @@ class KafkaConfigTest {
     defaults.put(KafkaConfig.ZkConnectProp, "127.0.0.1:2181")
     // For ZkConnectionTimeoutMs
     defaults.put(KafkaConfig.ZkSessionTimeoutMsProp, "1234")
+    defaults.put(KafkaConfig.BrokerIdGenerationEnableProp, "false")
     defaults.put(KafkaConfig.MaxReservedBrokerIdProp, "1")
     defaults.put(KafkaConfig.BrokerIdProp, "1")
     defaults.put(KafkaConfig.HostNameProp, "127.0.0.1")
@@ -540,20 +585,21 @@ class KafkaConfigTest {
     defaults.put(KafkaConfig.OffsetsTopicCompressionCodecProp, SnappyCompressionCodec.codec.toString)
 
     val config = KafkaConfig.fromProps(defaults)
-    Assert.assertEquals("127.0.0.1:2181", config.zkConnect)
-    Assert.assertEquals(1234, config.zkConnectionTimeoutMs)
-    Assert.assertEquals(1, config.maxReservedBrokerId)
-    Assert.assertEquals(1, config.brokerId)
-    Assert.assertEquals("127.0.0.1", config.hostName)
-    Assert.assertEquals(1122, config.advertisedPort)
-    Assert.assertEquals("127.0.0.1", config.advertisedHostName)
-    Assert.assertEquals(Map("127.0.0.1" -> 2, "127.0.0.2" -> 3), config.maxConnectionsPerIpOverrides)
-    Assert.assertEquals(List("/tmp1", "/tmp2"), config.logDirs)
-    Assert.assertEquals(12 * 60L * 1000L * 60, config.logRollTimeMillis)
-    Assert.assertEquals(11 * 60L * 1000L * 60, config.logRollTimeJitterMillis)
-    Assert.assertEquals(10 * 60L * 1000L * 60, config.logRetentionTimeMillis)
-    Assert.assertEquals(123L, config.logFlushIntervalMs)
-    Assert.assertEquals(SnappyCompressionCodec, config.offsetsTopicCompressionCodec)
+    assertEquals("127.0.0.1:2181", config.zkConnect)
+    assertEquals(1234, config.zkConnectionTimeoutMs)
+    assertEquals(false, config.brokerIdGenerationEnable)
+    assertEquals(1, config.maxReservedBrokerId)
+    assertEquals(1, config.brokerId)
+    assertEquals("127.0.0.1", config.hostName)
+    assertEquals(1122, config.advertisedPort)
+    assertEquals("127.0.0.1", config.advertisedHostName)
+    assertEquals(Map("127.0.0.1" -> 2, "127.0.0.2" -> 3), config.maxConnectionsPerIpOverrides)
+    assertEquals(List("/tmp1", "/tmp2"), config.logDirs)
+    assertEquals(12 * 60L * 1000L * 60, config.logRollTimeMillis)
+    assertEquals(11 * 60L * 1000L * 60, config.logRollTimeJitterMillis)
+    assertEquals(10 * 60L * 1000L * 60, config.logRetentionTimeMillis)
+    assertEquals(123L, config.logFlushIntervalMs)
+    assertEquals(SnappyCompressionCodec, config.offsetsTopicCompressionCodec)
   }
 
   private def assertPropertyInvalid(validRequiredProps: => Properties, name: String, values: Any*) {

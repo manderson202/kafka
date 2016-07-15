@@ -21,7 +21,11 @@ import org.apache.kafka.connect.errors.DataException;
 
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
-import java.util.*;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 
 public class ConnectSchema implements Schema {
     /**
@@ -295,7 +299,7 @@ public class ConnectSchema implements Schema {
 
 
     /**
-     * Get the {@link Schema.Type} associated with the the given class.
+     * Get the {@link Schema.Type} associated with the given class.
      *
      * @param klass the Class to
      * @return the corresponding type, nor null if there is no matching type

@@ -21,6 +21,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.connect.data.Date;
 import org.apache.kafka.connect.data.Decimal;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -36,10 +37,13 @@ import org.junit.Before;
 import org.junit.Test;
 import org.powermock.reflect.Whitebox;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.net.URISyntaxException;
+import java.net.URL;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Calendar;
@@ -431,15 +435,17 @@ public class JsonConverterTest {
 
     @Test
     public void structToJson() {
-        Schema schema = SchemaBuilder.struct().field("field1", Schema.BOOLEAN_SCHEMA).field("field2", Schema.STRING_SCHEMA).build();
-        Struct input = new Struct(schema).put("field1", true).put("field2", "string");
+        Schema schema = SchemaBuilder.struct().field("field1", Schema.BOOLEAN_SCHEMA).field("field2", Schema.STRING_SCHEMA).field("field3", Schema.STRING_SCHEMA).field("field4", Schema.BOOLEAN_SCHEMA).build();
+        Struct input = new Struct(schema).put("field1", true).put("field2", "string2").put("field3", "string3").put("field4", false);
         JsonNode converted = parse(converter.fromConnectData(TOPIC, schema, input));
         validateEnvelope(converted);
-        assertEquals(parse("{ \"type\": \"struct\", \"optional\": false, \"fields\": [{ \"field\": \"field1\", \"type\": \"boolean\", \"optional\": false }, { \"field\": \"field2\", \"type\": \"string\", \"optional\": false }] }"),
+        assertEquals(parse("{ \"type\": \"struct\", \"optional\": false, \"fields\": [{ \"field\": \"field1\", \"type\": \"boolean\", \"optional\": false }, { \"field\": \"field2\", \"type\": \"string\", \"optional\": false }, { \"field\": \"field3\", \"type\": \"string\", \"optional\": false }, { \"field\": \"field4\", \"type\": \"boolean\", \"optional\": false }] }"),
                 converted.get(JsonSchema.ENVELOPE_SCHEMA_FIELD_NAME));
         assertEquals(JsonNodeFactory.instance.objectNode()
                         .put("field1", true)
-                        .put("field2", "string"),
+                        .put("field2", "string2")
+                        .put("field3", "string3")
+                        .put("field4", false),
                 converted.get(JsonSchema.ENVELOPE_PAYLOAD_FIELD_NAME));
     }
 
@@ -603,6 +609,19 @@ public class JsonConverterTest {
         // Validate that a similar, but different schema correctly returns a different schema.
         converter.fromConnectData(TOPIC, SchemaBuilder.bool().optional().build(), true);
         assertEquals(2, cache.size());
+    }
+
+    @Test
+    public void testJsonSchemaCacheSizeFromConfigFile() throws URISyntaxException, IOException {
+        URL url = getClass().getResource("/connect-test.properties");
+        File propFile = new File(url.toURI());
+        String workerPropsFile = propFile.getAbsolutePath();
+        Map<String, String> workerProps = !workerPropsFile.isEmpty() ?
+                Utils.propsToStringMap(Utils.loadProps(workerPropsFile)) : Collections.<String, String>emptyMap();
+
+        JsonConverter rc = new JsonConverter();
+        rc.configure(workerProps, false);
+
     }
 
 

@@ -18,14 +18,13 @@ package org.apache.kafka.connect.runtime.distributed;
 
 import org.apache.kafka.clients.consumer.internals.AbstractCoordinator;
 import org.apache.kafka.clients.consumer.internals.ConsumerNetworkClient;
-import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.metrics.Measurable;
 import org.apache.kafka.common.metrics.MetricConfig;
 import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.requests.JoinGroupRequest.ProtocolMetadata;
 import org.apache.kafka.common.utils.CircularIterator;
 import org.apache.kafka.common.utils.Time;
-import org.apache.kafka.connect.storage.KafkaConfigStorage;
+import org.apache.kafka.connect.storage.ConfigBackingStore;
 import org.apache.kafka.connect.util.ConnectorTaskId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -50,11 +49,12 @@ public final class WorkerCoordinator extends AbstractCoordinator implements Clos
     public static final String DEFAULT_SUBPROTOCOL = "default";
 
     private final String restUrl;
-    private final KafkaConfigStorage configStorage;
+    private final ConfigBackingStore configStorage;
     private ConnectProtocol.Assignment assignmentSnapshot;
     private final WorkerCoordinatorMetrics sensors;
     private ClusterConfigState configSnapshot;
     private final WorkerRebalanceListener listener;
+    private LeaderState leaderState;
 
     private boolean rejoinRequested;
 
@@ -67,11 +67,10 @@ public final class WorkerCoordinator extends AbstractCoordinator implements Clos
                              int heartbeatIntervalMs,
                              Metrics metrics,
                              String metricGrpPrefix,
-                             Map<String, String> metricTags,
                              Time time,
                              long retryBackoffMs,
                              String restUrl,
-                             KafkaConfigStorage configStorage,
+                             ConfigBackingStore configStorage,
                              WorkerRebalanceListener listener) {
         super(client,
                 groupId,
@@ -79,13 +78,12 @@ public final class WorkerCoordinator extends AbstractCoordinator implements Clos
                 heartbeatIntervalMs,
                 metrics,
                 metricGrpPrefix,
-                metricTags,
                 time,
                 retryBackoffMs);
         this.restUrl = restUrl;
         this.configStorage = configStorage;
         this.assignmentSnapshot = null;
-        this.sensors = new WorkerCoordinatorMetrics(metrics, metricGrpPrefix, metricTags);
+        this.sensors = new WorkerCoordinatorMetrics(metrics, metricGrpPrefix);
         this.listener = listener;
         this.rejoinRequested = false;
     }
@@ -115,7 +113,7 @@ public final class WorkerCoordinator extends AbstractCoordinator implements Clos
         // tasks. It's the responsibility of the code driving this process to decide how to react (e.g. trying to get
         // up to date, try to rejoin again, leaving the group and backing off, etc.).
         rejoinRequested = false;
-        listener.onAssigned(assignmentSnapshot);
+        listener.onAssigned(assignmentSnapshot, generation);
     }
 
     @Override
@@ -201,6 +199,8 @@ public final class WorkerCoordinator extends AbstractCoordinator implements Clos
             }
         }
 
+        this.leaderState = new LeaderState(allConfigs, connectorAssignments, taskAssignments);
+
         return fillAssignmentsAndSerialize(allConfigs.keySet(), ConnectProtocol.Assignment.NO_ERROR,
                 leaderId, allConfigs.get(leaderId).url(), maxOffset, connectorAssignments, taskAssignments);
     }
@@ -231,6 +231,7 @@ public final class WorkerCoordinator extends AbstractCoordinator implements Clos
 
     @Override
     protected void onJoinPrepare(int generation, String memberId) {
+        this.leaderState = null;
         log.debug("Revoking previous assignment {}", assignmentSnapshot);
         if (assignmentSnapshot != null && !assignmentSnapshot.failed())
             listener.onRevoked(assignmentSnapshot.leader(), assignmentSnapshot.connectors(), assignmentSnapshot.tasks());
@@ -250,11 +251,27 @@ public final class WorkerCoordinator extends AbstractCoordinator implements Clos
         super.close();
     }
 
+    private boolean isLeader() {
+        return assignmentSnapshot != null && memberId.equals(assignmentSnapshot.leader());
+    }
+
+    public String ownerUrl(String connector) {
+        if (needRejoin() || !isLeader())
+            return null;
+        return leaderState.ownerUrl(connector);
+    }
+
+    public String ownerUrl(ConnectorTaskId task) {
+        if (needRejoin() || !isLeader())
+            return null;
+        return leaderState.ownerUrl(task);
+    }
+
     private class WorkerCoordinatorMetrics {
         public final Metrics metrics;
         public final String metricGrpName;
 
-        public WorkerCoordinatorMetrics(Metrics metrics, String metricGrpPrefix, Map<String, String> tags) {
+        public WorkerCoordinatorMetrics(Metrics metrics, String metricGrpPrefix) {
             this.metrics = metrics;
             this.metricGrpName = metricGrpPrefix + "-coordinator-metrics";
 
@@ -270,16 +287,12 @@ public final class WorkerCoordinator extends AbstractCoordinator implements Clos
                 }
             };
 
-            metrics.addMetric(new MetricName("assigned-connectors",
-                            this.metricGrpName,
-                            "The number of connector instances currently assigned to this consumer",
-                            tags),
-                    numConnectors);
-            metrics.addMetric(new MetricName("assigned-tasks",
-                            this.metricGrpName,
-                            "The number of tasks currently assigned to this consumer",
-                            tags),
-                    numTasks);
+            metrics.addMetric(metrics.metricName("assigned-connectors",
+                              this.metricGrpName,
+                              "The number of connector instances currently assigned to this consumer"), numConnectors);
+            metrics.addMetric(metrics.metricName("assigned-tasks",
+                              this.metricGrpName,
+                              "The number of tasks currently assigned to this consumer"), numTasks);
         }
     }
 
@@ -287,6 +300,45 @@ public final class WorkerCoordinator extends AbstractCoordinator implements Clos
         List<T> res = new ArrayList<>(members);
         Collections.sort(res);
         return res;
+    }
+
+    private static <K, V> Map<V, K> invertAssignment(Map<K, List<V>> assignment) {
+        Map<V, K> inverted = new HashMap<>();
+        for (Map.Entry<K, List<V>> assignmentEntry : assignment.entrySet()) {
+            K key = assignmentEntry.getKey();
+            for (V value : assignmentEntry.getValue())
+                inverted.put(value, key);
+        }
+        return inverted;
+    }
+
+    private static class LeaderState {
+        private final Map<String, ConnectProtocol.WorkerState> allMembers;
+        private final Map<String, String> connectorOwners;
+        private final Map<ConnectorTaskId, String> taskOwners;
+
+        public LeaderState(Map<String, ConnectProtocol.WorkerState> allMembers,
+                           Map<String, List<String>> connectorAssignment,
+                           Map<String, List<ConnectorTaskId>> taskAssignment) {
+            this.allMembers = allMembers;
+            this.connectorOwners = invertAssignment(connectorAssignment);
+            this.taskOwners = invertAssignment(taskAssignment);
+        }
+
+        private String ownerUrl(ConnectorTaskId id) {
+            String ownerId = taskOwners.get(id);
+            if (ownerId == null)
+                return null;
+            return allMembers.get(ownerId).url();
+        }
+
+        private String ownerUrl(String connector) {
+            String ownerId = connectorOwners.get(connector);
+            if (ownerId == null)
+                return null;
+            return allMembers.get(ownerId).url();
+        }
+
     }
 
 }

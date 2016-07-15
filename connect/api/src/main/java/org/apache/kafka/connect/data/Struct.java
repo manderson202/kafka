@@ -85,8 +85,8 @@ public class Struct {
      */
     public Object get(Field field) {
         Object val = values[field.index()];
-        if (val == null && schema.defaultValue() != null) {
-            val = schema.defaultValue();
+        if (val == null && field.schema().defaultValue() != null) {
+            val = field.schema().defaultValue();
         }
         return val;
     }
@@ -172,6 +172,7 @@ public class Struct {
     /**
      * Equivalent to calling {@link #get(String)} and casting the result to a List.
      */
+    @SuppressWarnings("unchecked")
     public <T> List<T> getArray(String fieldName) {
         return (List<T>) getCheckType(fieldName, Schema.Type.ARRAY);
     }
@@ -179,6 +180,7 @@ public class Struct {
     /**
      * Equivalent to calling {@link #get(String)} and casting the result to a Map.
      */
+    @SuppressWarnings("unchecked")
     public <K, V> Map<K, V> getMap(String fieldName) {
         return (Map<K, V>) getCheckType(fieldName, Schema.Type.MAP);
     }

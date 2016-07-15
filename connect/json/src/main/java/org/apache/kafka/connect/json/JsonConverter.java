@@ -25,7 +25,16 @@ import org.apache.kafka.common.cache.Cache;
 import org.apache.kafka.common.cache.LRUCache;
 import org.apache.kafka.common.cache.SynchronizedCache;
 import org.apache.kafka.common.errors.SerializationException;
-import org.apache.kafka.connect.data.*;
+import org.apache.kafka.connect.data.SchemaBuilder;
+import org.apache.kafka.connect.data.Schema;
+import org.apache.kafka.connect.data.Struct;
+import org.apache.kafka.connect.data.Field;
+import org.apache.kafka.connect.data.ConnectSchema;
+import org.apache.kafka.connect.data.SchemaAndValue;
+import org.apache.kafka.connect.data.Timestamp;
+import org.apache.kafka.connect.data.Time;
+import org.apache.kafka.connect.data.Decimal;
+import org.apache.kafka.connect.data.Date;
 import org.apache.kafka.connect.errors.DataException;
 import org.apache.kafka.connect.storage.Converter;
 
@@ -152,7 +161,7 @@ public class JsonConverter implements Converter {
                 Map<Object, Object> result = new HashMap<>();
                 if (schema == null || keySchema.type() == Schema.Type.STRING) {
                     if (!value.isObject())
-                        throw new DataException("Map's with string fields should be encoded as JSON objects, but found " + value.getNodeType());
+                        throw new DataException("Maps with string fields should be encoded as JSON objects, but found " + value.getNodeType());
                     Iterator<Map.Entry<String, JsonNode>> fieldIt = value.fields();
                     while (fieldIt.hasNext()) {
                         Map.Entry<String, JsonNode> entry = fieldIt.next();
@@ -160,7 +169,7 @@ public class JsonConverter implements Converter {
                     }
                 } else {
                     if (!value.isArray())
-                        throw new DataException("Map's with non-string fields should be encoded as JSON array of tuples, but found " + value.getNodeType());
+                        throw new DataException("Maps with non-string fields should be encoded as JSON array of tuples, but found " + value.getNodeType());
                     for (JsonNode entry : value) {
                         if (!entry.isArray())
                             throw new DataException("Found invalid map entry instead of array tuple: " + entry.getNodeType());
@@ -295,7 +304,7 @@ public class JsonConverter implements Converter {
 
         Object cacheSizeVal = configs.get(SCHEMAS_CACHE_SIZE_CONFIG);
         if (cacheSizeVal != null)
-            cacheSize = (int) cacheSizeVal;
+            cacheSize = Integer.parseInt((String) cacheSizeVal);
         fromConnectSchemaCache = new SynchronizedCache<>(new LRUCache<Schema, ObjectNode>(cacheSize));
         toConnectSchemaCache = new SynchronizedCache<>(new LRUCache<JsonNode, Schema>(cacheSize));
     }
@@ -395,7 +404,7 @@ public class JsonConverter implements Converter {
                 jsonSchema = JsonNodeFactory.instance.objectNode().put(JsonSchema.SCHEMA_TYPE_FIELD_NAME, JsonSchema.STRUCT_TYPE_NAME);
                 ArrayNode fields = JsonNodeFactory.instance.arrayNode();
                 for (Field field : schema.fields()) {
-                    ObjectNode fieldJsonSchema = asJsonSchema(field.schema());
+                    ObjectNode fieldJsonSchema = asJsonSchema(field.schema()).deepCopy();
                     fieldJsonSchema.put(JsonSchema.STRUCT_FIELD_NAME_FIELD_NAME, field.name());
                     fields.add(fieldJsonSchema);
                 }
@@ -416,7 +425,7 @@ public class JsonConverter implements Converter {
             ObjectNode jsonSchemaParams = JsonNodeFactory.instance.objectNode();
             for (Map.Entry<String, String> prop : schema.parameters().entrySet())
                 jsonSchemaParams.put(prop.getKey(), prop.getValue());
-            jsonSchema.put(JsonSchema.SCHEMA_PARAMETERS_FIELD_NAME, jsonSchemaParams);
+            jsonSchema.set(JsonSchema.SCHEMA_PARAMETERS_FIELD_NAME, jsonSchemaParams);
         }
         if (schema.defaultValue() != null)
             jsonSchema.set(JsonSchema.SCHEMA_DEFAULT_FIELD_NAME, convertToJson(schema, schema.defaultValue()));

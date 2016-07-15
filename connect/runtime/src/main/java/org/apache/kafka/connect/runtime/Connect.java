@@ -33,7 +33,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class Connect {
     private static final Logger log = LoggerFactory.getLogger(Connect.class);
 
-    private final Worker worker;
     private final Herder herder;
     private final RestServer rest;
     private final CountDownLatch startLatch = new CountDownLatch(1);
@@ -41,40 +40,41 @@ public class Connect {
     private final AtomicBoolean shutdown = new AtomicBoolean(false);
     private final ShutdownHook shutdownHook;
 
-    public Connect(Worker worker, Herder herder, RestServer rest) {
+    public Connect(Herder herder, RestServer rest) {
         log.debug("Kafka Connect instance created");
-        this.worker = worker;
         this.herder = herder;
         this.rest = rest;
         shutdownHook = new ShutdownHook();
     }
 
     public void start() {
-        log.info("Kafka Connect starting");
-        Runtime.getRuntime().addShutdownHook(shutdownHook);
+        try {
+            log.info("Kafka Connect starting");
+            Runtime.getRuntime().addShutdownHook(shutdownHook);
 
-        worker.start();
-        herder.start();
-        rest.start(herder);
+            herder.start();
+            rest.start(herder);
 
-        log.info("Kafka Connect started");
-
-        startLatch.countDown();
+            log.info("Kafka Connect started");
+        } finally {
+            startLatch.countDown();
+        }
     }
 
     public void stop() {
-        boolean wasShuttingDown = shutdown.getAndSet(true);
-        if (!wasShuttingDown) {
-            log.info("Kafka Connect stopping");
+        try {
+            boolean wasShuttingDown = shutdown.getAndSet(true);
+            if (!wasShuttingDown) {
+                log.info("Kafka Connect stopping");
 
-            rest.stop();
-            herder.stop();
-            worker.stop();
+                rest.stop();
+                herder.stop();
 
-            log.info("Kafka Connect stopped");
+                log.info("Kafka Connect stopped");
+            }
+        } finally {
+            stopLatch.countDown();
         }
-
-        stopLatch.countDown();
     }
 
     public void awaitStop() {
