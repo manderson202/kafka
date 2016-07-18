@@ -77,7 +77,7 @@ public enum Errors {
     UNKNOWN(-1, new UnknownServerException("The server experienced an unexpected error when processing the request")),
     NONE(0, null),
     OFFSET_OUT_OF_RANGE(1,
-            new ApiException("The requested offset is not within the range of offsets maintained by the server.")),
+            new OffsetOutOfRangeException("The requested offset is not within the range of offsets maintained by the server.")),
     CORRUPT_MESSAGE(2,
             new CorruptRecordException("This message has failed its CRC checksum, exceeds the valid size, or is otherwise corrupt.")),
     UNKNOWN_TOPIC_OR_PARTITION(3,
@@ -158,10 +158,10 @@ public enum Errors {
     INVALID_CONFIG(40,
             new InvalidConfigurationException("Configuration is invalid.")),
     NOT_CONTROLLER(41,
-        new NotControllerException("This is not the correct controller for this cluster.")),
+            new NotControllerException("This is not the correct controller for this cluster.")),
     INVALID_REQUEST(42,
-        new InvalidRequestException("This most likely occurs because of a request being malformed by the client library or" +
-            " the message was sent to an incompatible broker. See the broker logs for more details."));
+            new InvalidRequestException("This most likely occurs because of a request being malformed by the client library or" +
+                    " the message was sent to an incompatible broker. See the broker logs for more details."));
 
     private static final Logger log = LoggerFactory.getLogger(Errors.class);
 

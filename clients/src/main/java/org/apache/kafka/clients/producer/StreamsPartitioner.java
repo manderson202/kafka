@@ -1,4 +1,6 @@
-/* Copyright (c) 2015 & onwards. MapR Tech, Inc., All rights reserved */
+/**
+ *  Copyright (c) 2015 & onwards. MapR Tech, Inc., All rights reserved
+ */
 package org.apache.kafka.clients.producer;
 import org.apache.kafka.common.Configurable;
 

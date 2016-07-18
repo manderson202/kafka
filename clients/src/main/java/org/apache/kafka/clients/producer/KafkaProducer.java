@@ -17,6 +17,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
@@ -28,6 +29,7 @@ import org.apache.kafka.clients.Metadata;
 import org.apache.kafka.clients.NetworkClient;
 import org.apache.kafka.clients.producer.internals.RecordAccumulator;
 import org.apache.kafka.clients.producer.internals.Sender;
+import org.apache.kafka.clients.producer.internals.ProducerInterceptors;
 import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.Metric;
@@ -73,7 +75,7 @@ import org.apache.kafka.clients.mapr.GenericHFactory;
  * <pre>
  * {@code
  * Properties props = new Properties();
- * props.put("bootstrap.servers", "localhost:4242");
+ * props.put("bootstrap.servers", "localhost:9092");
  * props.put("acks", "all");
  * props.put("retries", 0);
  * props.put("batch.size", 16384);
@@ -119,8 +121,8 @@ import org.apache.kafka.clients.mapr.GenericHFactory;
  * <p>
  * The <code>buffer.memory</code> controls the total amount of memory available to the producer for buffering. If records
  * are sent faster than they can be transmitted to the server then this buffer space will be exhausted. When the buffer space is
- * exhausted additional send calls will block. For uses where you want to avoid any blocking you can set <code>block.on.buffer.full=false</code> which
- * will cause the send call to result in an exception.
+ * exhausted additional send calls will block. The threshold for time to block is determined by <code>max.block.ms</code> after which it throws
+ * a TimeoutException.
  * <p>
  * The <code>key.serializer</code> and <code>value.serializer</code> instruct how to turn the key and value objects the user provides with
  * their <code>ProducerRecord</code> into bytes. You can use the included {@link org.apache.kafka.common.serialization.ByteArraySerializer} or
@@ -149,6 +151,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     private ProducerConfig producerConfig;
     private long maxBlockTimeMs;
     private int requestTimeoutMs;
+    private ProducerInterceptors<K, V> interceptors;
 
     // For streams we have added the following.
     private final ProducerConfig config;
@@ -159,7 +162,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
 
     /**
      * A producer is instantiated by providing a set of key-value pairs as configuration. Valid configuration strings
-     * are documented <a href="http://kafka.apache.org/documentation.html#newproducerconfigs">here</a>. Values can be
+     * are documented <a href="http://kafka.apache.org/documentation.html#producerconfigs">here</a>. Values can be
      * either strings or Objects of the appropriate type (for example a numeric configuration would accept either the
      * string "42" or the integer 42).
      * @param configs   The producer configs
@@ -171,7 +174,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
 
     /**
      * A producer is instantiated by providing a set of key-value pairs as configuration, a key and a value {@link Serializer}.
-     * Valid configuration strings are documented <a href="http://kafka.apache.org/documentation.html#newproducerconfigs">here</a>.
+     * Valid configuration strings are documented <a href="http://kafka.apache.org/documentation.html#producerconfigs">here</a>.
      * Values can be either strings or Objects of the appropriate type (for example a numeric configuration would accept
      * either the string "42" or the integer 42).
      * @param configs   The producer configs
@@ -187,7 +190,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
 
     /**
      * A producer is instantiated by providing a set of key-value pairs as configuration. Valid configuration strings
-     * are documented <a href="http://kafka.apache.org/documentation.html#newproducerconfigs">here</a>.
+     * are documented <a href="http://kafka.apache.org/documentation.html#producerconfigs">here</a>.
      * @param properties   The producer configs
      */
     public KafkaProducer(Properties properties) {
@@ -196,7 +199,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
 
     /**
      * A producer is instantiated by providing a set of key-value pairs as configuration, a key and a value {@link Serializer}.
-     * Valid configuration strings are documented <a href="http://kafka.apache.org/documentation.html#newproducerconfigs">here</a>.
+     * Valid configuration strings are documented <a href="http://kafka.apache.org/documentation.html#producerconfigs">here</a>.
      * @param properties   The producer configs
      * @param keySerializer  The serializer for key that implements {@link Serializer}. The configure() method won't be
      *                       called in the producer when the serializer is passed in directly.
@@ -213,6 +216,10 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
         log.debug("Starting the Kafka producer");
         this.config = config;
         this.closed = false;
+
+        clientId = config.getString(ProducerConfig.CLIENT_ID_CONFIG);
+        if (clientId.length() <= 0)
+            clientId = "producer-" + PRODUCER_CLIENT_ID_SEQUENCE.getAndIncrement();
 
         if (keySerializer == null) {
             this.keySerializer = config.getConfiguredInstance(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG,
@@ -235,7 +242,9 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
         try {
             defaultStream = config.getString(ProducerConfig.STREAMS_PRODUCER_DEFAULT_STREAM_CONFIG);
             if (defaultStream == "") defaultStream = null;
-        } catch (Exception e) {}
+        } catch (Exception e) {
+            // No default stream
+        }
 
         if (defaultStream != null) {
             initializeProducer(defaultStream + ":");  // Just to be safe, add a ":", which will make it streams!
@@ -246,8 +255,9 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
      * Given a topic name now we can decide if we want to initialize a
      * KafkaProducer or a MarlinProducer.
      */
+    @SuppressWarnings({"unchecked", "deprecation"})
     private void initializeProducer(String topic) {
-        synchronized(this) {
+        synchronized (this) {
             if (closed) {
                 log.error("cannot initialize producer.  already closed.");
                 return;
@@ -258,19 +268,32 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                 return;
             }
 
-            if (topic.startsWith("/") == true || topic.contains(":") == true) {
-                Producer<K,V> ap;
+            if (topic.startsWith("/") || topic.contains(":")) {
+                log.trace("Starting the MapR Kafka producer");
+
+                Map<String, Object> userProvidedConfigs = config.originals();
+                List<ProducerInterceptor<K, V>> interceptorList = (List) (new ProducerConfig(userProvidedConfigs)).getConfiguredInstances(ProducerConfig.INTERCEPTOR_CLASSES_CONFIG,
+                        ProducerInterceptor.class);
+                this.interceptors = interceptorList.isEmpty() ? null : new ProducerInterceptors<>(interceptorList);
+
+                // TODO: Remove once Interceptors are supported
+                if (this.interceptors != null) {
+                    throw new UnsupportedOperationException("Interceptors are not supported in MapR Implementation");
+                }
+
+                Producer<K, V> ap;
                 GenericHFactory<Producer<K, V>> producerFactory = new GenericHFactory<Producer<K, V>>();
                 ap =
                         producerFactory.getImplementorInstance("com.mapr.streams.impl.producer.MarlinProducer",
                                 new Object [] {this.config,
-                                        this.keySerializer,
-                                        this.valueSerializer},
+                                               this.keySerializer,
+                                               this.valueSerializer},
                                 new Class[]  {ProducerConfig.class,
-                                        Serializer.class,
-                                        Serializer.class});
+                                              Serializer.class,
+                                              Serializer.class});
                 producerDriver = ap;
                 isStreams = true;
+                log.debug("MapR Kafka producer created");
             } else {
 
                 producerDriver = this;    // Set it to this, which is a kafka producer
@@ -288,19 +311,18 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                     this.producerConfig = config;
                     this.time = new SystemTime();
 
+                    Map<String, String> metricTags = new LinkedHashMap<String, String>();
+                    metricTags.put("client-id", clientId);
                     MetricConfig metricConfig = new MetricConfig().samples(config.getInt(ProducerConfig.METRICS_NUM_SAMPLES_CONFIG))
-                            .timeWindow(config.getLong(ProducerConfig.METRICS_SAMPLE_WINDOW_MS_CONFIG),
-                                    TimeUnit.MILLISECONDS);
-                    clientId = config.getString(ProducerConfig.CLIENT_ID_CONFIG);
-                    if (clientId.length() <= 0)
-                        clientId = "producer-" + PRODUCER_CLIENT_ID_SEQUENCE.getAndIncrement();
+                            .timeWindow(config.getLong(ProducerConfig.METRICS_SAMPLE_WINDOW_MS_CONFIG), TimeUnit.MILLISECONDS)
+                            .tags(metricTags);
                     List<MetricsReporter> reporters = config.getConfiguredInstances(ProducerConfig.METRIC_REPORTER_CLASSES_CONFIG,
                             MetricsReporter.class);
                     reporters.add(new JmxReporter(JMX_PREFIX));
                     this.metrics = new Metrics(metricConfig, reporters, time);
                     this.partitioner = config.getConfiguredInstance(ProducerConfig.PARTITIONER_CLASS_CONFIG, Partitioner.class);
                     long retryBackoffMs = config.getLong(ProducerConfig.RETRY_BACKOFF_MS_CONFIG);
-                    this.metadata = new Metadata(retryBackoffMs, config.getLong(ProducerConfig.METADATA_MAX_AGE_CONFIG));
+                    this.metadata = new Metadata(retryBackoffMs, config.getLong(ProducerConfig.METADATA_MAX_AGE_CONFIG), true);
                     this.maxRequestSize = config.getInt(ProducerConfig.MAX_REQUEST_SIZE_CONFIG);
                     this.totalMemorySize = config.getLong(ProducerConfig.BUFFER_MEMORY_CONFIG);
                     this.compressionType = CompressionType.forName(config.getString(ProducerConfig.COMPRESSION_TYPE_CONFIG));
@@ -341,21 +363,18 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                         this.requestTimeoutMs = config.getInt(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG);
                     }
 
-                    Map<String, String> metricTags = new LinkedHashMap<String, String>();
-                    metricTags.put("client-id", clientId);
                     this.accumulator = new RecordAccumulator(config.getInt(ProducerConfig.BATCH_SIZE_CONFIG),
                             this.totalMemorySize,
                             this.compressionType,
                             config.getLong(ProducerConfig.LINGER_MS_CONFIG),
                             retryBackoffMs,
                             metrics,
-                            time,
-                            metricTags);
+                            time);
                     List<InetSocketAddress> addresses = ClientUtils.parseAndValidateAddresses(config.getList(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG));
                     this.metadata.update(Cluster.bootstrap(addresses), time.milliseconds());
                     ChannelBuilder channelBuilder = ClientUtils.createChannelBuilder(config.values());
                     NetworkClient client = new NetworkClient(
-                            new Selector(config.getLong(ProducerConfig.CONNECTIONS_MAX_IDLE_MS_CONFIG), this.metrics, time, "producer", metricTags, channelBuilder),
+                            new Selector(config.getLong(ProducerConfig.CONNECTIONS_MAX_IDLE_MS_CONFIG), this.metrics, time, "producer", channelBuilder),
                             this.metadata,
                             clientId,
                             config.getInt(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION),
@@ -366,6 +385,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                     this.sender = new Sender(client,
                             this.metadata,
                             this.accumulator,
+                            config.getInt(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION) == 1,
                             config.getInt(ProducerConfig.MAX_REQUEST_SIZE_CONFIG),
                             (short) parseAcks(config.getString(ProducerConfig.ACKS_CONFIG)),
                             config.getInt(ProducerConfig.RETRIES_CONFIG),
@@ -395,6 +415,13 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                         config.ignore(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG);
                         this.valueSerializer = valueSerializer;
                     }
+
+                    // load interceptors and make sure they get clientId
+                    userProvidedConfigs.put(ProducerConfig.CLIENT_ID_CONFIG, clientId);
+                    List<ProducerInterceptor<K, V>> interceptorList = (List) (new ProducerConfig(userProvidedConfigs)).getConfiguredInstances(ProducerConfig.INTERCEPTOR_CLASSES_CONFIG,
+                            ProducerInterceptor.class);
+                    this.interceptors = interceptorList.isEmpty() ? null : new ProducerInterceptors<>(interceptorList);
+
                     config.logUnused();
                     AppInfoParser.registerAppInfo(JMX_PREFIX, clientId);
                     log.debug("Kafka producer started");
@@ -411,7 +438,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
 
     private static int parseAcks(String acksString) {
         try {
-            return acksString.trim().toLowerCase().equals("all") ? -1 : Integer.parseInt(acksString.trim());
+            return acksString.trim().equalsIgnoreCase("all") ? -1 : Integer.parseInt(acksString.trim());
         } catch (NumberFormatException e) {
             throw new ConfigException("Invalid configuration value for 'acks': " + acksString);
         }
@@ -452,8 +479,12 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
      * records waiting to be sent. This allows sending many records in parallel without blocking to wait for the
      * response after each one.
      * <p>
-     * The result of the send is a {@link RecordMetadata} specifying the partition the record was sent to and the offset
-     * it was assigned.
+     * The result of the send is a {@link RecordMetadata} specifying the partition the record was sent to, the offset
+     * it was assigned and the timestamp of the record. If
+     * {@link org.apache.kafka.common.record.TimestampType#CREATE_TIME CreateTime} is used by the topic, the timestamp
+     * will be the user provided timestamp or the record send time if the user did not specify a timestamp for the
+     * record. If {@link org.apache.kafka.common.record.TimestampType#LOG_APPEND_TIME LogAppendTime} is used for the
+     * topic, the timestamp will be the Kafka broker local time when the message is appended.
      * <p>
      * Since the send call is asynchronous it returns a {@link java.util.concurrent.Future Future} for the
      * {@link RecordMetadata} that will be assigned to this record. Invoking {@link java.util.concurrent.Future#get()
@@ -508,7 +539,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
      *
      * @throws InterruptException If the thread is interrupted while blocked
      * @throws SerializationException If the key or value are not valid objects given the configured serializers
-     * @throws BufferExhaustedException If <code>block.on.buffer.full=false</code> and the buffer is full.
+     * @throws TimeoutException if the time taken for fetching metadata or allocating memory for the record has surpassed <code>max.block.ms</code>.
      *
      */
     @Override
@@ -528,57 +559,85 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             record = addDefaultStreamNameIfNeeded(record);
             return producerDriver.send(record, callback);
         } else {
+            // intercept the record, which can be potentially modified; this method does not throw exceptions
+            ProducerRecord<K, V> interceptedRecord = this.interceptors == null ? record : this.interceptors.onSend(record);
+            return doSend(interceptedRecord, callback);
+        }
+    }
+
+    /**
+     * Implementation of asynchronously send a record to a topic.
+     */
+    private Future<RecordMetadata> doSend(ProducerRecord<K, V> record, Callback callback) {
+        TopicPartition tp = null;
+        try {
+            // first make sure the metadata for the topic is available
+            ClusterAndWaitTime clusterAndWaitTime = waitOnMetadata(record.topic(), this.maxBlockTimeMs);
+            long remainingWaitMs = Math.max(0, this.maxBlockTimeMs - clusterAndWaitTime.waitedOnMetadataMs);
+            Cluster cluster = clusterAndWaitTime.cluster;
+            byte[] serializedKey;
             try {
-                // first make sure the metadata for the topic is available
-                long waitedOnMetadataMs = waitOnMetadata(record.topic(), this.maxBlockTimeMs);
-                long remainingWaitMs = Math.max(0, this.maxBlockTimeMs - waitedOnMetadataMs);
-                byte[] serializedKey;
-                try {
-                    serializedKey = keySerializer.serialize(record.topic(), record.key());
-                } catch (ClassCastException cce) {
-                    throw new SerializationException("Can't convert key of class " + record.key().getClass().getName() +
-                            " to class " + producerConfig.getClass(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG).getName() +
-                            " specified in key.serializer");
-                }
-                byte[] serializedValue;
-                try {
-                    serializedValue = valueSerializer.serialize(record.topic(), record.value());
-                } catch (ClassCastException cce) {
-                    throw new SerializationException("Can't convert value of class " + record.value().getClass().getName() +
-                            " to class " + producerConfig.getClass(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG).getName() +
-                            " specified in value.serializer");
-                }
-                int partition = partition(record, serializedKey, serializedValue, metadata.fetch());
-                int serializedSize = Records.LOG_OVERHEAD + Record.recordSize(serializedKey, serializedValue);
-                ensureValidRecordSize(serializedSize);
-                TopicPartition tp = new TopicPartition(record.topic(), partition);
-                log.trace("Sending record {} with callback {} to topic {} partition {}", record, callback, record.topic(), partition);
-                RecordAccumulator.RecordAppendResult result = accumulator.append(tp, serializedKey, serializedValue, callback, remainingWaitMs);
-                if (result.batchIsFull || result.newBatchCreated) {
-                    log.trace("Waking up the sender since topic {} partition {} is either full or getting a new batch", record.topic(), partition);
-                    this.sender.wakeup();
-                }
-                return result.future;
-                // handling exceptions and record the errors;
-                // for API exceptions return them in the future,
-                // for other exceptions throw directly
-            } catch (ApiException e) {
-                log.debug("Exception occurred during message send:", e);
-                if (callback != null)
-                    callback.onCompletion(null, e);
-                this.errors.record();
-                return new FutureFailure(e);
-            } catch (InterruptedException e) {
-                this.errors.record();
-                throw new InterruptException(e);
-            } catch (BufferExhaustedException e) {
-                this.errors.record();
-                this.metrics.sensor("buffer-exhausted-records").record();
-                throw e;
-            } catch (KafkaException e) {
-                this.errors.record();
-                throw e;
+                serializedKey = keySerializer.serialize(record.topic(), record.key());
+            } catch (ClassCastException cce) {
+                throw new SerializationException("Can't convert key of class " + record.key().getClass().getName() +
+                        " to class " + producerConfig.getClass(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG).getName() +
+                        " specified in key.serializer");
             }
+            byte[] serializedValue;
+            try {
+                serializedValue = valueSerializer.serialize(record.topic(), record.value());
+            } catch (ClassCastException cce) {
+                throw new SerializationException("Can't convert value of class " + record.value().getClass().getName() +
+                        " to class " + producerConfig.getClass(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG).getName() +
+                        " specified in value.serializer");
+            }
+
+            int partition = partition(record, serializedKey, serializedValue, cluster);
+            int serializedSize = Records.LOG_OVERHEAD + Record.recordSize(serializedKey, serializedValue);
+            ensureValidRecordSize(serializedSize);
+            tp = new TopicPartition(record.topic(), partition);
+            long timestamp = record.timestamp() == null ? time.milliseconds() : record.timestamp();
+            log.trace("Sending record {} with callback {} to topic {} partition {}", record, callback, record.topic(), partition);
+            // producer callback will make sure to call both 'callback' and interceptor callback
+            Callback interceptCallback = this.interceptors == null ? callback : new InterceptorCallback<>(callback, this.interceptors, tp);
+            RecordAccumulator.RecordAppendResult result = accumulator.append(tp, timestamp, serializedKey, serializedValue, interceptCallback, remainingWaitMs);
+            if (result.batchIsFull || result.newBatchCreated) {
+                log.trace("Waking up the sender since topic {} partition {} is either full or getting a new batch", record.topic(), partition);
+                this.sender.wakeup();
+            }
+            return result.future;
+            // handling exceptions and record the errors;
+            // for API exceptions return them in the future,
+            // for other exceptions throw directly
+        } catch (ApiException e) {
+            log.debug("Exception occurred during message send:", e);
+            if (callback != null)
+                callback.onCompletion(null, e);
+            this.errors.record();
+            if (this.interceptors != null)
+                this.interceptors.onSendError(record, tp, e);
+            return new FutureFailure(e);
+        } catch (InterruptedException e) {
+            this.errors.record();
+            if (this.interceptors != null)
+                this.interceptors.onSendError(record, tp, e);
+            throw new InterruptException(e);
+        } catch (BufferExhaustedException e) {
+            this.errors.record();
+            this.metrics.sensor("buffer-exhausted-records").record();
+            if (this.interceptors != null)
+                this.interceptors.onSendError(record, tp, e);
+            throw e;
+        } catch (KafkaException e) {
+            this.errors.record();
+            if (this.interceptors != null)
+                this.interceptors.onSendError(record, tp, e);
+            throw e;
+        } catch (Exception e) {
+            // we notify interceptor about all exceptions, since onSend is called before anything else in this method
+            if (this.interceptors != null)
+                this.interceptors.onSendError(record, tp, e);
+            throw e;
         }
     }
 
@@ -586,31 +645,37 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
      * Wait for cluster metadata including partitions for the given topic to be available.
      * @param topic The topic we want metadata for
      * @param maxWaitMs The maximum time in ms for waiting on the metadata
-     * @return The amount of time we waited in ms
+     * @return The cluster containing topic metadata and the amount of time we waited in ms
      */
-    private long waitOnMetadata(String topic, long maxWaitMs) throws InterruptedException {
-        // add topic to metadata topic list if it is not there already.
-        if (!this.metadata.containsTopic(topic))
-            this.metadata.add(topic);
-
-        if (metadata.fetch().partitionsForTopic(topic) != null)
-            return 0;
+    private ClusterAndWaitTime waitOnMetadata(String topic, long maxWaitMs) throws InterruptedException {
+        // add topic to metadata topic list if it is not there already and reset expiry
+        this.metadata.add(topic);
+        Cluster cluster = metadata.fetch();
+        if (cluster.partitionsForTopic(topic) != null)
+            return new ClusterAndWaitTime(cluster, 0);
 
         long begin = time.milliseconds();
         long remainingWaitMs = maxWaitMs;
-        while (metadata.fetch().partitionsForTopic(topic) == null) {
+        long elapsed = 0;
+        while (cluster.partitionsForTopic(topic) == null) {
             log.trace("Requesting metadata update for topic {}.", topic);
             int version = metadata.requestUpdate();
             sender.wakeup();
-            metadata.awaitUpdate(version, remainingWaitMs);
-            long elapsed = time.milliseconds() - begin;
+            try {
+                metadata.awaitUpdate(version, remainingWaitMs);
+            } catch (TimeoutException ex) {
+                // Rethrow with original maxWaitMs to prevent logging exception with remainingWaitMs
+                throw new TimeoutException("Failed to update metadata after " + maxWaitMs + " ms.");
+            }
+            cluster = metadata.fetch();
+            elapsed = time.milliseconds() - begin;
             if (elapsed >= maxWaitMs)
                 throw new TimeoutException("Failed to update metadata after " + maxWaitMs + " ms.");
-            if (metadata.fetch().unauthorizedTopics().contains(topic))
+            if (cluster.unauthorizedTopics().contains(topic))
                 throw new TopicAuthorizationException(topic);
             remainingWaitMs = maxWaitMs - elapsed;
         }
-        return time.milliseconds() - begin;
+        return new ClusterAndWaitTime(cluster, elapsed);
     }
 
     /**
@@ -619,14 +684,14 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     private void ensureValidRecordSize(int size) {
         if (size > this.maxRequestSize)
             throw new RecordTooLargeException("The message is " + size +
-                    " bytes when serialized which is larger than the maximum request size you have configured with the " +
-                    ProducerConfig.MAX_REQUEST_SIZE_CONFIG +
-                    " configuration.");
+                                              " bytes when serialized which is larger than the maximum request size you have configured with the " +
+                                              ProducerConfig.MAX_REQUEST_SIZE_CONFIG +
+                                              " configuration.");
         if (size > this.totalMemorySize)
             throw new RecordTooLargeException("The message is " + size +
-                    " bytes when serialized which is larger than the total memory buffer you have configured with the " +
-                    ProducerConfig.BUFFER_MEMORY_CONFIG +
-                    " configuration.");
+                                              " bytes when serialized which is larger than the total memory buffer you have configured with the " +
+                                              ProducerConfig.BUFFER_MEMORY_CONFIG +
+                                              " configuration.");
     }
 
     /**
@@ -696,12 +761,13 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
         if (isStreams) {
             return producerDriver.partitionsFor(topic);
         } else {
+            Cluster cluster;
             try {
-                waitOnMetadata(topic, this.maxBlockTimeMs);
+                cluster = waitOnMetadata(topic, this.maxBlockTimeMs).cluster;
             } catch (InterruptedException e) {
                 throw new InterruptException(e);
             }
-            return this.metadata.fetch().partitionsForTopic(topic);
+            return cluster.partitionsForTopic(topic);
         }
     }
 
@@ -762,7 +828,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     private void close(long timeout, TimeUnit timeUnit, boolean swallowException) {
         Producer<K, V> producerDriverToClose = null;
 
-        synchronized(this) {
+        synchronized (this) {
             if (closed)
                 return;
 
@@ -818,6 +884,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                 }
             }
 
+            ClientUtils.closeQuietly(interceptors, "producer interceptors", firstException);
             ClientUtils.closeQuietly(metrics, "producer metrics", firstException);
             ClientUtils.closeQuietly(keySerializer, "producer keySerializer", firstException);
             ClientUtils.closeQuietly(valueSerializer, "producer valueSerializer", firstException);
@@ -837,17 +904,24 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
         Integer partition = record.partition();
         if (partition != null) {
             List<PartitionInfo> partitions = cluster.partitionsForTopic(record.topic());
-            int numPartitions = partitions.size();
+            int lastPartition = partitions.size() - 1;
             // they have given us a partition, use it
-            if (partition < 0 || partition >= numPartitions)
-                throw new IllegalArgumentException("Invalid partition given with record: " + partition
-                        + " is not in the range [0..."
-                        + numPartitions
-                        + "].");
+            if (partition < 0 || partition > lastPartition) {
+                throw new IllegalArgumentException(String.format("Invalid partition given with record: %d is not in the range [0...%d].", partition, lastPartition));
+            }
             return partition;
         }
         return this.partitioner.partition(record.topic(), record.key(), serializedKey, record.value(), serializedValue,
                 cluster);
+    }
+
+    private static class ClusterAndWaitTime {
+        final Cluster cluster;
+        final long waitedOnMetadataMs;
+        ClusterAndWaitTime(Cluster cluster, long waitedOnMetadataMs) {
+            this.cluster = cluster;
+            this.waitedOnMetadataMs = waitedOnMetadataMs;
+        }
     }
 
     private static class FutureFailure implements Future<RecordMetadata> {
@@ -885,4 +959,33 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
 
     }
 
+    /**
+     * A callback called when producer request is complete. It in turn calls user-supplied callback (if given) and
+     * notifies producer interceptors about the request completion.
+     */
+    private static class InterceptorCallback<K, V> implements Callback {
+        private final Callback userCallback;
+        private final ProducerInterceptors<K, V> interceptors;
+        private final TopicPartition tp;
+
+        public InterceptorCallback(Callback userCallback, ProducerInterceptors<K, V> interceptors,
+                                   TopicPartition tp) {
+            this.userCallback = userCallback;
+            this.interceptors = interceptors;
+            this.tp = tp;
+        }
+
+        public void onCompletion(RecordMetadata metadata, Exception exception) {
+            if (this.interceptors != null) {
+                if (metadata == null) {
+                    this.interceptors.onAcknowledgement(new RecordMetadata(tp, -1, -1, Record.NO_TIMESTAMP, -1, -1, -1),
+                            exception);
+                } else {
+                    this.interceptors.onAcknowledgement(metadata, exception);
+                }
+            }
+            if (this.userCallback != null)
+                this.userCallback.onCompletion(metadata, exception);
+        }
+    }
 }

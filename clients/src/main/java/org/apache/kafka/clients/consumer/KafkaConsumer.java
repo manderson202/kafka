@@ -639,7 +639,9 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         try {
             defaultStream = config.getString(ConsumerConfig.STREAMS_CONSUMER_DEFAULT_STREAM_CONFIG);
             if (defaultStream == "") defaultStream = null;
-        } catch (Exception e) {}
+        } catch (Exception e) {
+            // No default specified
+        }
 
         if (defaultStream != null) {
             initializeConsumer(defaultStream + ":");  // Just to be safe, add a ":", which will make it streams!
@@ -647,7 +649,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
     }
 
     private void initializeConsumer(String topic) {
-        synchronized(this) {
+        synchronized (this) {
             if (isStreamsClosed) {
                 log.error("cannot initialize consumer. already closed.");
                 return;
@@ -658,7 +660,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                 return;
             }
 
-            if (topic.startsWith("/") == true || topic.contains(":") == true) {
+            if (topic.startsWith("/") || topic.contains(":")) {
                 log.debug("Starting the MapR Kafka consumer");
 
                 // TODO: Remove once Interceptors are supported
@@ -666,18 +668,17 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                     throw new UnsupportedOperationException("Interceptors are not supported in MapR Implementation");
                 }
 
-                Consumer<K,V> ac;
+                Consumer<K, V> ac;
                 GenericHFactory<Consumer<K, V>> consumerFactory = new GenericHFactory<Consumer<K, V>>();
 
                 ac =
                         consumerFactory.getImplementorInstance("com.mapr.streams.impl.listener.MarlinListener",
                                 new Object [] {this.config,
-                                        this.keyDeserializer,
-                                        this.valueDeserializer},
-                                new Class[]
-                                        {ConsumerConfig.class,
-                                                Deserializer.class,
-                                                Deserializer.class});
+                                               this.keyDeserializer,
+                                               this.valueDeserializer},
+                                new Class[] {ConsumerConfig.class,
+                                             Deserializer.class,
+                                             Deserializer.class});
                 isStreams = true;
                 consumerDriver = ac;
                 log.debug("MapR Kafka consumer created");
@@ -810,11 +811,11 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
     }
 
     private boolean useDefaultStreamName(String topicname) {
-        return (!topicname.startsWith("/"));
+        return !topicname.startsWith("/");
     }
 
     private String addDefaultStreamNameToTopicName(String topicname) {
-        return (defaultStream + ":" + topicname);
+        return defaultStream + ":" + topicname;
     }
 
     private TopicPartition addDefaultStreamNameToTopicPartition(TopicPartition tp) {
@@ -927,7 +928,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      */
     public Set<TopicPartition> assignment() {
         if (consumerDriver == null) {
-            return (new HashSet<TopicPartition>());
+            return new HashSet<TopicPartition>();
         } else if (isStreams) {
             return consumerDriver.assignment();
         } else {
@@ -947,7 +948,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      */
     public Set<String> subscription() {
         if (consumerDriver == null) {
-            return (new HashSet<String>());
+            return new HashSet<String>();
         } else if (isStreams) {
             return consumerDriver.subscription();
         } else {
@@ -1894,7 +1895,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
     public void close() {
         Consumer<K, V> consumerDriverToDelete = null;
 
-        synchronized(this) {
+        synchronized (this) {
             if (isStreamsClosed) {
                 return;
             }

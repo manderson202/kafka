@@ -25,7 +25,7 @@
 
   <!-- header -->
   <module name="RegexpHeader">
-    <property name="header" value="/\*\*\nLicensed to the Apache.*"/>
+    <property name="header" value="/\*\*\n(Licensed to the Apache|Copyright).*"/>
   </module>
 
   <module name="TreeWalker">
