@@ -238,16 +238,22 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             this.valueSerializer = valueSerializer;
         }
 
-        defaultStream = null;
-        try {
-            defaultStream = config.getString(ProducerConfig.STREAMS_PRODUCER_DEFAULT_STREAM_CONFIG);
-            if (defaultStream == "") defaultStream = null;
-        } catch (Exception e) {
-            // No default stream
-        }
+        if (config.getString(ProducerConfig.STREAMS_PRODUCER_FORCE_CLIENT_CONFIG).equalsIgnoreCase("oss")) {
+            initializeProducer("");
+        } else if (config.getString(ProducerConfig.STREAMS_PRODUCER_FORCE_CLIENT_CONFIG).equalsIgnoreCase("mapr")) {
+            initializeProducer(":");
+        } else {
+            defaultStream = null;
+            try {
+                defaultStream = config.getString(ProducerConfig.STREAMS_PRODUCER_DEFAULT_STREAM_CONFIG);
+                if (defaultStream == "") defaultStream = null;
+            } catch (Exception e) {
+                // No default stream
+            }
 
-        if (defaultStream != null) {
-            initializeProducer(defaultStream + ":");  // Just to be safe, add a ":", which will make it streams!
+            if (defaultStream != null) {
+                initializeProducer(defaultStream + ":");  // Just to be safe, add a ":", which will make it streams!
+            }
         }
     }
 
@@ -298,12 +304,6 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
 
                 producerDriver = this;    // Set it to this, which is a kafka producer
                 isStreams = false;
-
-                List<InetSocketAddress> kafkaaddresses =
-                        ClientUtils.parseAndValidateAddresses(config.getList(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG));
-                if (kafkaaddresses.size() == 0 || kafkaaddresses.get(0).equals("")) {
-                    throw new KafkaException("Bootstrap servers not specified in configuration");
-                }
 
                 try {
                     log.trace("Starting the Kafka producer");

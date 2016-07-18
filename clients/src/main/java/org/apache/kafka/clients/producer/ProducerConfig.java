@@ -247,6 +247,14 @@ public class ProducerConfig extends AbstractConfig {
             + "is set to /exampleStream, then the message will be sent to /exampleStream:exampleTopic.  If producer sends a message to "
             + "/anotherStream:exampleTopic, then the stream name provided will be respected.";
 
+    /** <code>streams.producer.force.client</code> **/
+    public static final String STREAMS_PRODUCER_FORCE_CLIENT_CONFIG = "streams.producer.force.client";
+    private static final String STREAMS_PRODUCER_FORCE_CLIENT_DOC = "Determines the type of Kafka Producer to use.  "
+            + "This can be useful for testing and/or avoiding the lazy initialization used by the dynamic method. should be one of: "
+            + "<ul><li>dynamic: determine the client type dynamically</li>"
+            + "<li>oss: force the Open Source Kafka Producer to be used on initialization</li>"
+            + "<li>mapr: force the MapR Kafka Producer to be used on initialization</li></ul>";
+
     static {
         CONFIG = new ConfigDef().define(BOOTSTRAP_SERVERS_CONFIG, Type.LIST, Importance.HIGH, CommonClientConfigs.BOOTSTRAP_SERVERS_DOC)
                 .define(BUFFER_MEMORY_CONFIG, Type.LONG, 32 * 1024 * 1024L, atLeast(0L), Importance.HIGH, BUFFER_MEMORY_DOC)
@@ -369,7 +377,13 @@ public class ProducerConfig extends AbstractConfig {
                         Type.STRING,
                         "",
                         Importance.MEDIUM,
-                        STREAMS_PRODUCER_DEFAULT_STREAM_DOC);
+                        STREAMS_PRODUCER_DEFAULT_STREAM_DOC)
+                .define(STREAMS_PRODUCER_FORCE_CLIENT_CONFIG,
+                        Type.STRING,
+                        "dynamic",
+                        in("dynamic", "oss", "mapr"),
+                        Importance.LOW,
+                        STREAMS_PRODUCER_FORCE_CLIENT_DOC);
     }
 
     public static Map<String, Object> addSerializerToConfig(Map<String, Object> configs,

@@ -211,6 +211,14 @@ public class ConsumerConfig extends AbstractConfig {
     public static final String STREAMS_CONSUMER_BUFFER_MEMORY_CONFIG = "streams.consumer.buffer.memory";
     private static final String STREAMS_CONSUMER_BUFFER_MEMORY_DOC = "Size of memory the consumer can use to read ahead messages and cache before being consumed.";
 
+    /** <code>streams.consumer.force.client</code> **/
+    public static final String STREAMS_CONSUMER_FORCE_CLIENT_CONFIG = "streams.consumer.force.client";
+    private static final String STREAMS_CONSUMER_FORCE_CLIENT_DOC = "Determines the type of Kafka Consumer to use.  "
+            + "This can be useful for testing and/or avoiding the lazy initialization used by the dynamic method. should be one of: "
+            + "<ul><li>dynamic: determine the client type dynamically</li>"
+            + "<li>oss: force the Open Source Kafka Consumer to be used on initialization</li>"
+            + "<li>mapr: force the MapR Kafka Consumer to be used on initialization</li></ul>";
+
     static {
         CONFIG = new ConfigDef().define(BOOTSTRAP_SERVERS_CONFIG,
                 Type.LIST,
@@ -393,7 +401,13 @@ public class ConsumerConfig extends AbstractConfig {
                         Type.LONG,
                         64 * 1024 * 1024,
                         Importance.MEDIUM,
-                        STREAMS_CONSUMER_BUFFER_MEMORY_DOC);
+                        STREAMS_CONSUMER_BUFFER_MEMORY_DOC)
+                .define(STREAMS_CONSUMER_FORCE_CLIENT_CONFIG,
+                        Type.STRING,
+                        "dynamic",
+                        in("dynamic", "oss", "mapr"),
+                        Importance.LOW,
+                        STREAMS_CONSUMER_FORCE_CLIENT_DOC);
     }
 
     public static Map<String, Object> addDeserializerToConfig(Map<String, Object> configs,

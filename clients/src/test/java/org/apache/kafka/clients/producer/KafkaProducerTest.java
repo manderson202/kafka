@@ -55,6 +55,7 @@ public class KafkaProducerTest {
         props.setProperty(ProducerConfig.CLIENT_ID_CONFIG, "testConstructorClose");
         props.setProperty(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "some.invalid.hostname.foo.bar:9999");
         props.setProperty(ProducerConfig.METRIC_REPORTER_CLASSES_CONFIG, MockMetricsReporter.class.getName());
+        props.setProperty(ProducerConfig.STREAMS_PRODUCER_FORCE_CLIENT_CONFIG, "oss");
 
         final int oldInitCount = MockMetricsReporter.INIT_COUNT.get();
         final int oldCloseCount = MockMetricsReporter.CLOSE_COUNT.get();
@@ -77,6 +78,7 @@ public class KafkaProducerTest {
         configs.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9999");
         configs.put(ProducerConfig.METRIC_REPORTER_CLASSES_CONFIG, MockMetricsReporter.class.getName());
         configs.put(CommonClientConfigs.SECURITY_PROTOCOL_CONFIG, CommonClientConfigs.DEFAULT_SECURITY_PROTOCOL);
+        configs.put(ProducerConfig.STREAMS_PRODUCER_FORCE_CLIENT_CONFIG, "oss");
         final int oldInitCount = MockSerializer.INIT_COUNT.get();
         final int oldCloseCount = MockSerializer.CLOSE_COUNT.get();
 
@@ -98,6 +100,7 @@ public class KafkaProducerTest {
             props.setProperty(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9999");
             props.setProperty(ProducerConfig.INTERCEPTOR_CLASSES_CONFIG, MockProducerInterceptor.class.getName());
             props.setProperty(MockProducerInterceptor.APPEND_STRING_PROP, "something");
+            props.setProperty(ProducerConfig.STREAMS_PRODUCER_FORCE_CLIENT_CONFIG, "oss");
 
             KafkaProducer<String, String> producer = new KafkaProducer<String, String>(
                     props, new StringSerializer(), new StringSerializer());
@@ -145,6 +148,7 @@ public class KafkaProducerTest {
     public void testMetadataFetch() throws Exception {
         Properties props = new Properties();
         props.setProperty(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9999");
+        props.setProperty(ProducerConfig.STREAMS_PRODUCER_FORCE_CLIENT_CONFIG, "oss");
         KafkaProducer<String, String> producer = new KafkaProducer<>(props, new StringSerializer(), new StringSerializer());
         Metadata metadata = PowerMock.createNiceMock(Metadata.class);
         MemberModifier.field(KafkaProducer.class, "metadata").set(producer, metadata);

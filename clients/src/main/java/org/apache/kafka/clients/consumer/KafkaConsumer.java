@@ -512,7 +512,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
     private final Deserializer<K> keyDeserializer;
     private final Deserializer<V> valueDeserializer;
     private Fetcher<K, V> fetcher;
-    private final ConsumerInterceptors<K, V> interceptors;
+    private ConsumerInterceptors<K, V> interceptors;
 
     private Time time;
     private ConsumerNetworkClient client;
@@ -628,26 +628,26 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             this.valueDeserializer = valueDeserializer;
         }
 
-        // load interceptors and make sure they get clientId
-        Map<String, Object> userProvidedConfigs = config.originals();
-        userProvidedConfigs.put(ConsumerConfig.CLIENT_ID_CONFIG, clientId);
-        List<ConsumerInterceptor<K, V>> interceptorList = (List) (new ConsumerConfig(userProvidedConfigs)).getConfiguredInstances(ConsumerConfig.INTERCEPTOR_CLASSES_CONFIG,
-                ConsumerInterceptor.class);
-        this.interceptors = interceptorList.isEmpty() ? null : new ConsumerInterceptors<>(interceptorList);
+        if (config.getString(ConsumerConfig.STREAMS_CONSUMER_FORCE_CLIENT_CONFIG).equalsIgnoreCase("oss")) {
+            initializeConsumer("");
+        } else if (config.getString(ConsumerConfig.STREAMS_CONSUMER_FORCE_CLIENT_CONFIG).equalsIgnoreCase("mapr")) {
+            initializeConsumer(":");
+        } else {
+            defaultStream = null;
+            try {
+                defaultStream = config.getString(ConsumerConfig.STREAMS_CONSUMER_DEFAULT_STREAM_CONFIG);
+                if (defaultStream.equals("")) defaultStream = null;
+            } catch (Exception e) {
+                // No default specified
+            }
 
-        defaultStream = null;
-        try {
-            defaultStream = config.getString(ConsumerConfig.STREAMS_CONSUMER_DEFAULT_STREAM_CONFIG);
-            if (defaultStream == "") defaultStream = null;
-        } catch (Exception e) {
-            // No default specified
-        }
-
-        if (defaultStream != null) {
-            initializeConsumer(defaultStream + ":");  // Just to be safe, add a ":", which will make it streams!
+            if (defaultStream != null) {
+                initializeConsumer(defaultStream + ":");  // Just to be safe, add a ":", which will make it streams!
+            }
         }
     }
 
+    @SuppressWarnings("unchecked")
     private void initializeConsumer(String topic) {
         synchronized (this) {
             if (isStreamsClosed) {
@@ -659,6 +659,16 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                 log.debug("initialized consumer already.");
                 return;
             }
+
+            if (null == topic)
+                throw new IllegalArgumentException("Topic cannot be null");
+
+            // load interceptors and make sure they get clientId
+            Map<String, Object> userProvidedConfigs = config.originals();
+            userProvidedConfigs.put(ConsumerConfig.CLIENT_ID_CONFIG, clientId);
+            List<ConsumerInterceptor<K, V>> interceptorList = (List) (new ConsumerConfig(userProvidedConfigs)).getConfiguredInstances(ConsumerConfig.INTERCEPTOR_CLASSES_CONFIG,
+                    ConsumerInterceptor.class);
+            this.interceptors = interceptorList.isEmpty() ? null : new ConsumerInterceptors<>(interceptorList);
 
             if (topic.startsWith("/") || topic.contains(":")) {
                 log.debug("Starting the MapR Kafka consumer");
@@ -685,11 +695,6 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             } else {
                 isStreams = false;
                 consumerDriver = this;
-
-                List<InetSocketAddress> kafkaaddresses = ClientUtils.parseAndValidateAddresses(config.getList(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG));
-                if (kafkaaddresses.size() == 0 || kafkaaddresses.get(0).equals("")) {
-                    throw new KafkaException("Bootstrap servers not specified in configuration");
-                }
 
                 try {
                     log.debug("Starting the Kafka consumer");
@@ -991,9 +996,11 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      */
     @Override
     public void subscribe(Collection<String> topics, ConsumerRebalanceListener listener) {
-        if (topics.size() == 0) {
-            // Since there aren't any topics in this case, we can ignore the ConsumerRebalanceListener
-            log.debug("Subscribing to empty topics list");
+        if (topics == null) {
+            throw new IllegalArgumentException("Topic collection to subscribe to cannot be null");
+        } else if (topics.isEmpty()) {
+            // treat subscribing to empty topic list as the same as unsubscribing
+            this.unsubscribe();
             return;
         }
 
@@ -1014,14 +1021,13 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         } else {
             acquire();
             try {
-                if (topics.isEmpty()) {
-                    // treat subscribing to empty topic list as the same as unsubscribing
-                    this.unsubscribe();
-                } else {
-                    log.debug("Subscribed to topic(s): {}", Utils.join(topics, ", "));
-                    this.subscriptions.subscribe(topics, listener);
-                    metadata.setTopics(subscriptions.groupSubscription());
+                for (String topic : topics) {
+                    if (topic == null || topic.trim().isEmpty())
+                        throw new IllegalArgumentException("Topic collection to subscribe to cannot contain null or empty topic");
                 }
+                log.debug("Subscribed to topic(s): {}", Utils.join(topics, ", "));
+                this.subscriptions.subscribe(topics, listener);
+                metadata.setTopics(subscriptions.groupSubscription());
             } finally {
                 release();
             }
@@ -1068,6 +1074,9 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      */
     @Override
     public void subscribe(Pattern pattern, ConsumerRebalanceListener listener) {
+        if (pattern == null)
+            throw new IllegalArgumentException("Topic pattern to subscribe to cannot be null");
+
         if (consumerDriver == null) {
             initializeConsumer(pattern.toString());
         }
@@ -1131,8 +1140,10 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      */
     @Override
     public void assign(Collection<TopicPartition> partitions) {
-        if (partitions.size() == 0) {
-            log.debug("assigning empty partitions list");
+        if (partitions == null) {
+            throw new IllegalArgumentException("Topic partition collection to assign to cannot be null");
+        } else if (partitions.isEmpty()) {
+            this.unsubscribe();
             return;
         }
 
@@ -1153,11 +1164,16 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         } else {
             acquire();
             try {
+                Set<String> topics = new HashSet<>();
+                for (TopicPartition tp : partitions) {
+                    String topic = (tp != null) ? tp.topic() : null;
+                    if (topic == null || topic.trim().isEmpty())
+                        throw new IllegalArgumentException("Topic partitions to assign to cannot have null or empty topic");
+                    topics.add(topic);
+                }
+
                 log.debug("Subscribed to partition(s): {}", Utils.join(partitions, ", "));
                 this.subscriptions.assignFromUser(partitions);
-                Set<String> topics = new HashSet<>();
-                for (TopicPartition tp : partitions)
-                    topics.add(tp.topic());
                 metadata.setTopics(topics);
             } finally {
                 release();
@@ -1190,6 +1206,9 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      */
     @Override
     public ConsumerRecords<K, V> poll(long timeout) {
+        if (timeout < 0)
+            throw new IllegalArgumentException("Timeout must not be negative");
+
         if (consumerDriver == null) {
             throw new IllegalStateException("No active subscriptions");
         }
@@ -1199,9 +1218,6 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         } else {
             acquire();
             try {
-                if (timeout < 0)
-                    throw new IllegalArgumentException("Timeout must not be negative");
-
                 // poll for new data until the timeout expires
                 long start = time.milliseconds();
                 long remaining = timeout;

@@ -84,6 +84,7 @@ public class KafkaConsumerTest {
         props.setProperty(ConsumerConfig.CLIENT_ID_CONFIG, "testConstructorClose");
         props.setProperty(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "some.invalid.hostname.foo.bar:9999");
         props.setProperty(ConsumerConfig.METRIC_REPORTER_CLASSES_CONFIG, MockMetricsReporter.class.getName());
+        props.setProperty(ConsumerConfig.STREAMS_CONSUMER_FORCE_CLIENT_CONFIG, "oss");
 
         final int oldInitCount = MockMetricsReporter.INIT_COUNT.get();
         final int oldCloseCount = MockMetricsReporter.CLOSE_COUNT.get();
@@ -271,6 +272,7 @@ public class KafkaConsumerTest {
             // test with client ID assigned by KafkaConsumer
             props.setProperty(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9999");
             props.setProperty(ConsumerConfig.INTERCEPTOR_CLASSES_CONFIG, MockConsumerInterceptor.class.getName());
+            props.setProperty(ConsumerConfig.STREAMS_CONSUMER_FORCE_CLIENT_CONFIG, "oss");
 
             KafkaConsumer<String, String> consumer = new KafkaConsumer<String, String>(
                     props, new StringDeserializer(), new StringDeserializer());
