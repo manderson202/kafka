@@ -284,7 +284,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
 
                 // TODO: Remove once Interceptors are supported
                 if (this.interceptors != null) {
-                    throw new UnsupportedOperationException("Interceptors are not supported in MapR Implementation");
+                    log.warn("Interceptors are not supported in MapR Implementation");
                 }
 
                 Producer<K, V> ap;
@@ -294,9 +294,9 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                                 new Object [] {this.config,
                                                this.keySerializer,
                                                this.valueSerializer},
-                                new Class[]  {ProducerConfig.class,
-                                              Serializer.class,
-                                              Serializer.class});
+                                ProducerConfig.class,
+                                Serializer.class,
+                                Serializer.class);
                 producerDriver = ap;
                 isStreams = true;
                 log.debug("MapR Kafka producer created");

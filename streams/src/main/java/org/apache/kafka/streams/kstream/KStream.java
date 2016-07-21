@@ -228,7 +228,7 @@ public interface KStream<K, V> {
     /**
      * Materialize this stream to a topic, also creates a new instance of {@link KStream} from the topic
      * using default serializers and deserializers and producer's {@link org.apache.kafka.clients.producer.internals.DefaultPartitioner}.
-     * This is equivalent to calling {@link #to(String)} and {@link org.apache.kafka.streams.kstream.KStreamBuilder#stream(String...)}.
+     * This is equivalent to calling {@link #to(String)} and {@link KStreamBuilder#stream(String...)}.
      *
      * @param topic     the topic name
      *
@@ -247,7 +247,7 @@ public interface KStream<K, V> {
     /**
      * Materialize this stream to a topic, also creates a new instance of {@link KStream} from the topic
      * using default serializers and deserializers and a customizable {@link StreamPartitioner} to determine the distribution of records to partitions.
-     * This is equivalent to calling {@link #to(StreamPartitioner, String)} and {@link org.apache.kafka.streams.kstream.KStreamBuilder#stream(String...)}.
+     * This is equivalent to calling {@link #to(StreamPartitioner, String)} and {@link KStreamBuilder#stream(String...)}.
      *
      * @param partitioner  the function used to determine how records are distributed among partitions of the topic,
      *                     if not specified producer's {@link org.apache.kafka.clients.producer.internals.DefaultPartitioner} will be used
@@ -263,7 +263,7 @@ public interface KStream<K, V> {
      * for the key {@link org.apache.kafka.streams.kstream.internals.WindowedStreamPartitioner} is used
      * &mdash; otherwise producer's {@link org.apache.kafka.clients.producer.internals.DefaultPartitioner} is used.
      * This is equivalent to calling {@link #to(Serde, Serde, String)} and
-     * {@link org.apache.kafka.streams.kstream.KStreamBuilder#stream(Serde, Serde, String...)}.
+     * {@link KStreamBuilder#stream(Serde, Serde, String...)}.
      *
      * @param keySerde     key serde used to send key-value pairs,
      *                     if not specified the default key serde defined in the configuration will be used
@@ -279,7 +279,7 @@ public interface KStream<K, V> {
      * Materialize this stream to a topic, also creates a new instance of {@link KStream} from the topic
      * using a customizable {@link StreamPartitioner} to determine the distribution of records to partitions.
      * This is equivalent to calling {@link #to(Serde, Serde, StreamPartitioner, String)} and
-     * {@link org.apache.kafka.streams.kstream.KStreamBuilder#stream(Serde, Serde, String...)}.
+     * {@link KStreamBuilder#stream(Serde, Serde, String...)}.
      *
      * @param keySerde     key serde used to send key-value pairs,
      *                     if not specified the default key serde defined in the configuration will be used
@@ -343,9 +343,9 @@ public interface KStream<K, V> {
     void to(Serde<K> keySerde, Serde<V> valSerde, StreamPartitioner<K, V> partitioner, String topic);
 
     /**
-     * Create a new {@link KStream} instance by applying a {@link org.apache.kafka.streams.kstream.Transformer} to all elements in this stream, one element at a time.
+     * Create a new {@link KStream} instance by applying a {@link Transformer} to all elements in this stream, one element at a time.
      *
-     * @param transformerSupplier   the instance of {@link TransformerSupplier} that generates {@link org.apache.kafka.streams.kstream.Transformer}
+     * @param transformerSupplier   the instance of {@link TransformerSupplier} that generates {@link Transformer}
      * @param stateStoreNames       the names of the state store used by the processor
      *
      * @return a new {@link KStream} with transformed key and value types
@@ -353,9 +353,9 @@ public interface KStream<K, V> {
     <K1, V1> KStream<K1, V1> transform(TransformerSupplier<K, V, KeyValue<K1, V1>> transformerSupplier, String... stateStoreNames);
 
     /**
-     * Create a new {@link KStream} instance by applying a {@link org.apache.kafka.streams.kstream.ValueTransformer} to all values in this stream, one element at a time.
+     * Create a new {@link KStream} instance by applying a {@link ValueTransformer} to all values in this stream, one element at a time.
      *
-     * @param valueTransformerSupplier  the instance of {@link ValueTransformerSupplier} that generates {@link org.apache.kafka.streams.kstream.ValueTransformer}
+     * @param valueTransformerSupplier  the instance of {@link ValueTransformerSupplier} that generates {@link ValueTransformer}
      * @param stateStoreNames           the names of the state store used by the processor
      *
      * @return a {@link KStream} that contains records with unmodified keys and transformed values with type {@code R}
@@ -565,8 +565,8 @@ public interface KStream<K, V> {
      * @return a {@link KGroupedStream} that contains the grouped records of the original {@link KStream}
      */
     <K1> KGroupedStream<K1, V> groupBy(KeyValueMapper<K, V, K1> selector,
-                                            Serde<K1> keySerde,
-                                            Serde<V> valSerde);
+                                       Serde<K1> keySerde,
+                                       Serde<V> valSerde);
 
     /**
      * Group the records with the same key into a {@link KGroupedStream} while preserving the

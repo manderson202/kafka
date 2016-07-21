@@ -1,0 +1,11 @@
+Manifest-Version: 1.0
+Implementation-Vendor: Mapr Technologies, Inc.
+Implementation-Title: mapr-streams
+Implementation-Version: 5.1.0-mapr
+Implementation-Vendor-Id: com.mapr.streams
+Built-By: root
+Build-Jdk: 1.7.0_71
+Created-By: Apache Maven 3.1.1
+Implementation-URL: http://www.mapr.com/mapr-streams/
+Archiver-Version: Plexus Archiver
+

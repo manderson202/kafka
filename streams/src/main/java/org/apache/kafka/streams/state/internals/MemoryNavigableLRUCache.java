@@ -60,12 +60,12 @@ public class MemoryNavigableLRUCache<K, V> extends MemoryLRUCache<K, V> {
 
     @Override
     public KeyValueIterator<K, V> range(K from, K to) {
-        return new MemoryNavigableLRUCache.CacheIterator<>(((NavigableSet<K>) this.keys).subSet(from, true, to, false).iterator(), this.map);
+        return new CacheIterator<>(((NavigableSet<K>) this.keys).subSet(from, true, to, false).iterator(), this.map);
     }
 
     @Override
     public KeyValueIterator<K, V> all() {
-        return new MemoryNavigableLRUCache.CacheIterator<>(this.keys.iterator(), this.map);
+        return new CacheIterator<>(this.keys.iterator(), this.map);
     }
 
     private static class CacheIterator<K, V> implements KeyValueIterator<K, V> {

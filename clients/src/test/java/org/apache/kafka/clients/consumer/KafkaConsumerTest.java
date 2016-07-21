@@ -56,6 +56,10 @@ import org.apache.kafka.test.MockMetricsReporter;
 import org.apache.kafka.test.TestUtils;
 import org.junit.Assert;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
+import org.junit.runners.Parameterized.Parameters;
+import org.junit.runners.Parameterized.Parameter;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
@@ -73,10 +77,31 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+@RunWith(Parameterized.class)
 public class KafkaConsumerTest {
 
-    private final String topic = "test";
-    private final TopicPartition tp0 = new TopicPartition("test", 0);
+    @Parameters
+    public static Collection<Object[]> data() {
+        if (Boolean.parseBoolean(System.getProperty("testMapr"))) {
+            return Arrays.asList(new Object[][]{
+                    {"oss", "test", new TopicPartition("test", 0)},
+                    {"mapr", "/streams/clients-test:test", new TopicPartition("/streams/clients-test:test", 0)}
+            });
+        } else {
+            return Arrays.asList(new Object[][]{
+                    {"oss", "test", new TopicPartition("test", 0)},
+            });
+        }
+    }
+
+    @Parameter
+    public String type;
+
+    @Parameter(value = 1)
+    public String topic;
+
+    @Parameter(value = 2)
+    public TopicPartition tp0;
 
     @Test
     public void testConstructorClose() throws Exception {
@@ -84,7 +109,7 @@ public class KafkaConsumerTest {
         props.setProperty(ConsumerConfig.CLIENT_ID_CONFIG, "testConstructorClose");
         props.setProperty(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "some.invalid.hostname.foo.bar:9999");
         props.setProperty(ConsumerConfig.METRIC_REPORTER_CLASSES_CONFIG, MockMetricsReporter.class.getName());
-        props.setProperty(ConsumerConfig.STREAMS_CONSUMER_FORCE_CLIENT_CONFIG, "oss");
+        props.setProperty(ConsumerConfig.STREAMS_CONSUMER_FORCE_CLIENT_CONFIG, type);
 
         final int oldInitCount = MockMetricsReporter.INIT_COUNT.get();
         final int oldCloseCount = MockMetricsReporter.CLOSE_COUNT.get();
@@ -272,7 +297,7 @@ public class KafkaConsumerTest {
             // test with client ID assigned by KafkaConsumer
             props.setProperty(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9999");
             props.setProperty(ConsumerConfig.INTERCEPTOR_CLASSES_CONFIG, MockConsumerInterceptor.class.getName());
-            props.setProperty(ConsumerConfig.STREAMS_CONSUMER_FORCE_CLIENT_CONFIG, "oss");
+            props.setProperty(ConsumerConfig.STREAMS_CONSUMER_FORCE_CLIENT_CONFIG, type);
 
             KafkaConsumer<String, String> consumer = new KafkaConsumer<String, String>(
                     props, new StringDeserializer(), new StringDeserializer());

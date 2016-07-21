@@ -675,7 +675,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
 
                 // TODO: Remove once Interceptors are supported
                 if (this.interceptors != null) {
-                    throw new UnsupportedOperationException("Interceptors are not supported in MapR Implementation");
+                    log.warn("Interceptors are not supported in MapR Implementation");
                 }
 
                 Consumer<K, V> ac;
@@ -686,9 +686,9 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                                 new Object [] {this.config,
                                                this.keyDeserializer,
                                                this.valueDeserializer},
-                                new Class[] {ConsumerConfig.class,
-                                             Deserializer.class,
-                                             Deserializer.class});
+                                ConsumerConfig.class,
+                                Deserializer.class,
+                                Deserializer.class);
                 isStreams = true;
                 consumerDriver = ac;
                 log.debug("MapR Kafka consumer created");

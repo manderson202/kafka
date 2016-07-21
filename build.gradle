@@ -19,6 +19,10 @@ buildscript {
   repositories {
     mavenCentral()
     jcenter()
+    maven {
+      url "http://repository.mapr.com/maven/"
+    }
+    mavenLocal()
   }
   apply from: file('gradle/buildscript.gradle'), to: buildscript
 
@@ -37,6 +41,10 @@ allprojects {
 
   repositories {
     mavenCentral()
+    maven {
+      url "http://repository.mapr.com/maven/"
+    }
+    mavenLocal()
   }
 
   apply plugin: 'com.github.ben-manes.versions'
@@ -162,6 +170,7 @@ subprojects {
       showStandardStreams = userShowStandardStreams ?: false
       exceptionFormat = 'full'
     }
+    systemProperty 'testMapr', System.getProperty("testMapr", "false")
   }
 
   jar {
@@ -577,6 +586,7 @@ project(':clients') {
     testCompile libs.bcpkix
     testCompile libs.junit
     testCompile libs.easymock
+    testCompile libs.mapr
     testCompile libs.powermock
     testCompile libs.powermockEasymock
 

@@ -32,7 +32,7 @@ import java.nio.ByteBuffer;
 public class Stores {
 
     /**
-     * Begin to create a new {@link org.apache.kafka.streams.processor.StateStoreSupplier} instance.
+     * Begin to create a new {@link StateStoreSupplier} instance.
      *
      * @param name the name of the store
      * @return the factory that can be used to specify other options or configurations for the store; never null
